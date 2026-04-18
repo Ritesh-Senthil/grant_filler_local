@@ -1,17 +1,66 @@
 import { useEffect, useState } from "react";
-import { api, type Fact, type Org } from "../api";
+import { Link } from "react-router-dom";
+import { api, type Fact } from "../api";
+import { questionDomId } from "../utils/questionDomId";
+
+function FactProvenance({ f }: { f: Fact }) {
+  const structured = Boolean(f.learned_from_grant_id);
+  const grantName = (f.learned_from_grant_name || "").trim();
+  const linkLabel = grantName || "Grant application";
+  const qid = (f.learned_from_question_id || "").trim();
+  const to =
+    structured && qid
+      ? `/grants/${f.learned_from_grant_id}#${questionDomId(qid)}`
+      : structured
+        ? `/grants/${f.learned_from_grant_id}`
+        : "";
+
+  if (structured) {
+    return (
+      <div className="mt-2 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-700/80 px-3 py-2 text-xs text-slate-600 dark:text-slate-400 space-y-1.5">
+        <div className="leading-snug">
+          <span className="font-medium text-slate-700 dark:text-slate-300">Learned from </span>
+          <Link
+            to={to}
+            className="text-blue-600 dark:text-blue-400 font-medium underline underline-offset-2 decoration-blue-600/35 dark:decoration-blue-400/35 hover:decoration-blue-600 dark:hover:decoration-blue-400"
+          >
+            {linkLabel}
+          </Link>
+          {qid && !f.learned_from_question_preview ? (
+            <span className="text-slate-500 dark:text-slate-500">
+              {" "}
+              (link scrolls to that question on the grant page)
+            </span>
+          ) : null}
+        </div>
+        {f.learned_from_question_preview ? (
+          <p className="text-slate-600 dark:text-slate-400 leading-snug border-l-2 border-slate-200 dark:border-slate-600 pl-2.5 m-0">
+            <span className="text-slate-500 dark:text-slate-500">Form question: </span>
+            “{f.learned_from_question_preview}”
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+
+  const manualSource = (f.source || "").trim();
+  if (!manualSource) return null;
+  return (
+    <p className="text-xs text-slate-500 mt-2 m-0">
+      <span className="font-medium text-slate-600 dark:text-slate-400">Source: </span>
+      {manualSource}
+    </p>
+  );
+}
 
 export function OrgPage() {
-  const [org, setOrg] = useState<Org | null>(null);
   const [facts, setFacts] = useState<Fact[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
 
   const load = async () => {
     setError(null);
     try {
-      const [o, f] = await Promise.all([api.getOrg(), api.listFacts()]);
-      setOrg(o);
+      const f = await api.listFacts();
       setFacts(f);
     } catch (e) {
       setError((e as Error).message);
@@ -21,20 +70,6 @@ export function OrgPage() {
   useEffect(() => {
     load();
   }, []);
-
-  async function saveOrg() {
-    if (!org) return;
-    setSaving(true);
-    setError(null);
-    try {
-      const updated = await api.putOrg(org);
-      setOrg(updated);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setSaving(false);
-    }
-  }
 
   const [newKey, setNewKey] = useState("");
   const [newVal, setNewVal] = useState("");
@@ -61,17 +96,16 @@ export function OrgPage() {
     load();
   }
 
-  if (!org) {
-    return <p className="text-slate-500">Loading…</p>;
-  }
-
   return (
     <div className="space-y-8 max-w-3xl">
       <div>
-        <h1 className="text-2xl font-semibold text-slate-900 dark:text-white">Organization</h1>
+        <h1 className="text-2xl font-semibold text-slate-900 dark:text-white">Organization facts</h1>
         <p className="text-slate-600 dark:text-slate-400 mt-1 max-w-2xl">
-          Information about your nonprofit. GrantFiller uses this when writing draft answers—keep it accurate
-          and update it anytime.
+          Reusable details GrantFiller can cite when drafting answers. Header branding lives in{" "}
+          <Link to="/settings" className="text-blue-600 dark:text-blue-400 font-medium underline underline-offset-2">
+            Settings
+          </Link>
+          .
         </p>
       </div>
 
@@ -82,47 +116,11 @@ export function OrgPage() {
       )}
 
       <section className="space-y-3">
-        <h2 className="text-lg font-medium text-slate-900 dark:text-white">Profile</h2>
-        <label className="block text-sm text-slate-700 dark:text-slate-300">Legal name</label>
-        <input
-          className="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2"
-          value={org.legal_name}
-          onChange={(e) => setOrg({ ...org, legal_name: e.target.value })}
-        />
-        <label className="block text-sm text-slate-700 dark:text-slate-300">Mission (short)</label>
-        <textarea
-          className="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 min-h-[80px]"
-          value={org.mission_short}
-          onChange={(e) => setOrg({ ...org, mission_short: e.target.value })}
-        />
-        <label className="block text-sm text-slate-700 dark:text-slate-300">Mission (long)</label>
-        <textarea
-          className="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 min-h-[120px]"
-          value={org.mission_long}
-          onChange={(e) => setOrg({ ...org, mission_long: e.target.value })}
-        />
-        <label className="block text-sm text-slate-700 dark:text-slate-300">Address</label>
-        <textarea
-          className="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2"
-          value={org.address}
-          onChange={(e) => setOrg({ ...org, address: e.target.value })}
-        />
-        <button
-          type="button"
-          onClick={saveOrg}
-          disabled={saving}
-          className="rounded-lg bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 text-sm font-medium disabled:opacity-50"
-        >
-          Save profile
-        </button>
-      </section>
-
-      <section className="space-y-3">
         <h2 className="text-lg font-medium text-slate-900 dark:text-white">Facts</h2>
         <p className="text-sm text-slate-600 dark:text-slate-400">
-          Short facts the AI can reuse when drafting answers. You can add them yourself, or use{" "}
+          Short facts the AI can reuse when drafting answers. Add them here, or run{" "}
           <strong className="font-medium text-slate-800 dark:text-slate-200">Update organization from these answers</strong>{" "}
-          on a grant after you&apos;ve filled in questions.
+          on a grant after you fill in answers — we&apos;ll show where each learned fact came from.
         </p>
         <form onSubmit={addFact} className="grid gap-2 sm:grid-cols-3">
           <input
@@ -157,7 +155,7 @@ export function OrgPage() {
               <div>
                 <div className="font-medium text-slate-900 dark:text-white">{f.key || "(no key)"}</div>
                 <div className="text-sm text-slate-600 dark:text-slate-400 whitespace-pre-wrap">{f.value}</div>
-                {f.source && <div className="text-xs text-slate-500 mt-1">Source: {f.source}</div>}
+                <FactProvenance f={f} />
               </div>
               <button
                 type="button"

@@ -1,10 +1,16 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO
 
 from docx import Document
 from fpdf import FPDF
 
 from app.models import Answer, Grant, Question
+
+
+def _utc_export_label() -> str:
+    """ISO-8601 UTC (settings-based locale deferred)."""
+    dt = datetime.now(timezone.utc).replace(microsecond=0)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _txt(s: str) -> str:
@@ -31,12 +37,13 @@ class QAPDF(FPDF):
 
 
 def build_qa_pdf(grant: Grant, questions: list[Question], answers: list[Answer]) -> bytes:
+    """Q&A PDF: no internal review / needs-input tags in body (product requirement)."""
     answer_map = {a.question_id: a for a in answers}
     pdf = QAPDF()
     pdf.add_page()
     pdf.set_font("Helvetica", "", 10)
     pdf.multi_cell(0, 6, _txt(f"Grant: {grant.name}"), ln=True)
-    pdf.multi_cell(0, 6, _txt(f"Exported: {datetime.utcnow().isoformat()}Z"), ln=True)
+    pdf.multi_cell(0, 6, _txt(f"Exported: {_utc_export_label()}"), ln=True)
     pdf.ln(4)
     for q in sorted(questions, key=lambda x: x.sort_order):
         pdf.set_font("Helvetica", "B", 11)
@@ -51,12 +58,7 @@ def build_qa_pdf(grant: Grant, questions: list[Question], answers: list[Answer])
                 val = str(a.answer_value)
         else:
             val = "(no answer yet)"
-        flag = ""
-        if a and a.needs_manual_input:
-            flag = " [needs manual input]"
-        if a and a.reviewed:
-            flag += " [reviewed]"
-        pdf.multi_cell(0, 6, _txt(f"A: {val}{flag}"), ln=True)
+        pdf.multi_cell(0, 6, _txt(f"A: {val}"), ln=True)
         pdf.ln(3)
     out = BytesIO()
     pdf.output(out)
@@ -68,7 +70,7 @@ def build_qa_markdown(grant: Grant, questions: list[Question], answers: list[Ans
     lines = [
         f"# {grant.name}",
         "",
-        f"_Exported {datetime.utcnow().isoformat()}Z_",
+        f"_Exported {_utc_export_label()}_",
         "",
     ]
     for q in sorted(questions, key=lambda x: x.sort_order):
@@ -84,8 +86,6 @@ def build_qa_markdown(grant: Grant, questions: list[Question], answers: list[Ans
             else:
                 val = str(a.answer_value)
         lines.append(f"**Answer:** {val or '(no answer yet)'}")
-        if a and a.needs_manual_input:
-            lines.append("_Needs manual input_")
         lines.append("")
     return "\n".join(lines)
 
@@ -95,7 +95,7 @@ def build_qa_docx(grant: Grant, questions: list[Question], answers: list[Answer]
     answer_map = {a.question_id: a for a in answers}
     doc = Document()
     doc.add_heading(grant.name, 0)
-    doc.add_paragraph(f"Exported {datetime.utcnow().isoformat()}Z")
+    doc.add_paragraph(f"Exported {_utc_export_label()}")
     for q in sorted(questions, key=lambda x: x.sort_order):
         doc.add_heading(f"Question ({q.q_type})", level=2)
         doc.add_paragraph(q.question_text)
@@ -108,13 +108,7 @@ def build_qa_docx(grant: Grant, questions: list[Question], answers: list[Answer]
                 val = str(a.answer_value)
         else:
             val = "(no answer yet)"
-        flags = []
-        if a and a.needs_manual_input:
-            flags.append("needs manual input")
-        if a and a.reviewed:
-            flags.append("reviewed")
-        suffix = f" ({', '.join(flags)})" if flags else ""
-        doc.add_paragraph(f"Answer: {val}{suffix}")
+        doc.add_paragraph(f"Answer: {val}")
     buf = BytesIO()
     doc.save(buf)
     return buf.getvalue()

@@ -6,29 +6,40 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from app.models import Answer, Question
-
-
-class ExtraSection(BaseModel):
-    id: str
-    title: str
-    content: str
+from app.services.evidence_ids import normalize_evidence_fact_ids
+from app.services.json_safe import sanitize_answer_value_for_api
 
 
 class OrganizationRead(BaseModel):
     id: str
-    legal_name: str = ""
-    mission_short: str = ""
-    mission_long: str = ""
-    address: str = ""
-    extra_sections: list[ExtraSection] = Field(default_factory=list)
+    header_display_name: str = ""
+    banner_file_key: str | None = None
 
 
 class OrganizationUpdate(BaseModel):
-    legal_name: str | None = None
-    mission_short: str | None = None
-    mission_long: str | None = None
-    address: str | None = None
-    extra_sections: list[ExtraSection] | None = None
+    header_display_name: str | None = None
+    clear_banner: bool | None = None
+
+
+class DeveloperCreditsRead(BaseModel):
+    display_name: str = ""
+    github_url: str = ""
+    linkedin_url: str = ""
+    sponsor_text: str = ""
+    sponsor_url: str = ""
+
+
+class UserPreferencesRead(BaseModel):
+    """Stub locale until Settings date formats wire through (roadmap E)."""
+    locale: str = "iso"
+
+
+class UserPreferencesPatch(BaseModel):
+    locale: str | None = None
+
+
+class EnhancementSubmit(BaseModel):
+    message: str = Field(min_length=1, max_length=20_000)
 
 
 class FactRead(BaseModel):
@@ -37,6 +48,11 @@ class FactRead(BaseModel):
     key: str
     value: str
     source: str = ""
+    learned_from_grant_id: str | None = None
+    learned_from_question_id: str | None = None
+    # Enriched for display (learned facts); omitted on write payloads
+    learned_from_grant_name: str | None = None
+    learned_from_question_preview: str | None = None
     updated_at: datetime | None = None
 
 
@@ -99,10 +115,10 @@ class AnswerRead(BaseModel):
     def from_model(cls, a: Answer) -> AnswerRead:
         return cls(
             question_id=a.question_id,
-            answer_value=a.answer_value,
+            answer_value=sanitize_answer_value_for_api(a.answer_value),
             reviewed=a.reviewed,
             needs_manual_input=a.needs_manual_input,
-            evidence_fact_ids=list(a.evidence_fact_ids or []),
+            evidence_fact_ids=normalize_evidence_fact_ids(a.evidence_fact_ids),
         )
 
 
@@ -116,6 +132,7 @@ class GrantRead(BaseModel):
     source_file_key: str | None = None
     file_name: str | None = None
     export_file_key: str | None = None
+    source_chunk_count: int = 0
     created_at: datetime
     updated_at: datetime
     questions: list[QuestionRead] = Field(default_factory=list)
@@ -145,6 +162,11 @@ class GenerateRequest(BaseModel):
     question_ids: list[str] | None = None
 
 
+class DuplicateGrantRequest(BaseModel):
+    name: str | None = None
+    include_qa: bool = False
+
+
 class ExportRequest(BaseModel):
     format: Literal["qa_pdf", "markdown", "docx"] = "qa_pdf"
 
@@ -165,8 +187,24 @@ class AnswerPatch(BaseModel):
     reviewed: bool | None = None
 
 
+class QuestionReorderRequest(BaseModel):
+    """Full ordered list of question_id values for this grant; replaces sort_order 0..n-1."""
+
+    question_ids: list[str] = Field(min_length=1)
+
+
 class ConfigRead(BaseModel):
-    ollama_configured: bool
-    default_model: str
-    data_dir: str
+    llm_provider: str = "ollama"
+    """Whether the active provider comes from env or from a saved choice in DATA_DIR/app_preferences.json."""
+    llm_provider_source: Literal["env", "user"] = "env"
+    llm_configured: bool = False
+    chat_model: str = ""
+    embed_model: str = ""
+    data_dir: str = ""
+
+
+class LlmPreferenceUpdate(BaseModel):
+    """Persist active provider under DATA_DIR/app_preferences.json (overrides LLM_PROVIDER from .env)."""
+
+    llm_provider: Literal["ollama", "gemini"]
 

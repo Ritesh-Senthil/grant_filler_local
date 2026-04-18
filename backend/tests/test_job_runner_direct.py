@@ -30,7 +30,7 @@ def _pdf_with_text(text: str) -> bytes:
 
 @pytest.fixture
 def runner_ctx(test_client, mock_ollama_questions):
-    """App state from a live TestClient (DB + storage + Ollama client)."""
+    """App state from a live TestClient (DB + storage + LLM + embedder)."""
     return test_client.app.state
 
 
@@ -48,7 +48,7 @@ async def _create_parse_job(sf, grant_id: str) -> str:
 def test_run_parse_job_success(runner_ctx, mock_ollama_questions):
     settings = runner_ctx.settings
     storage = runner_ctx.storage
-    ollama = runner_ctx.ollama
+    llm = runner_ctx.llm
     sf = runner_ctx.session_factory
 
     async def setup():
@@ -65,7 +65,7 @@ def test_run_parse_job_success(runner_ctx, mock_ollama_questions):
             return gid, jid
 
     gid, jid = asyncio.run(setup())
-    asyncio.run(run_parse_job(sf, settings, storage, ollama, jid, gid, None))
+    asyncio.run(run_parse_job(sf, settings, storage, llm, jid, gid, None))
 
     async def check():
         async with sf() as session:
@@ -94,7 +94,7 @@ def test_run_parse_job_success_web(runner_ctx, mock_ollama_questions, monkeypatc
 
     settings = runner_ctx.settings
     storage = runner_ctx.storage
-    ollama = runner_ctx.ollama
+    llm = runner_ctx.llm
     sf = runner_ctx.session_factory
 
     async def setup():
@@ -113,7 +113,7 @@ def test_run_parse_job_success_web(runner_ctx, mock_ollama_questions, monkeypatc
             sf,
             settings,
             storage,
-            ollama,
+            llm,
             jid,
             gid,
             None,
@@ -138,7 +138,7 @@ def test_run_parse_job_success_web(runner_ctx, mock_ollama_questions, monkeypatc
 def test_run_parse_job_fails_no_questions(runner_ctx, monkeypatch):
     settings = runner_ctx.settings
     storage = runner_ctx.storage
-    ollama = runner_ctx.ollama
+    llm = runner_ctx.llm
     sf = runner_ctx.session_factory
 
     monkeypatch.setattr(
@@ -161,7 +161,7 @@ def test_run_parse_job_fails_no_questions(runner_ctx, monkeypatch):
             return gid, jid
 
     gid, jid = asyncio.run(setup())
-    asyncio.run(run_parse_job(sf, settings, storage, ollama, jid, gid, None))
+    asyncio.run(run_parse_job(sf, settings, storage, llm, jid, gid, None))
 
     async def check():
         async with sf() as session:
@@ -176,7 +176,7 @@ def test_run_parse_job_fails_no_extractable_text(runner_ctx, mock_ollama_questio
     """Blank PDF page yields no segments before LLM."""
     settings = runner_ctx.settings
     storage = runner_ctx.storage
-    ollama = runner_ctx.ollama
+    llm = runner_ctx.llm
     sf = runner_ctx.session_factory
 
     def empty_pdf():
@@ -200,7 +200,7 @@ def test_run_parse_job_fails_no_extractable_text(runner_ctx, mock_ollama_questio
             return gid, jid
 
     gid, jid = asyncio.run(setup())
-    asyncio.run(run_parse_job(sf, settings, storage, ollama, jid, gid, None))
+    asyncio.run(run_parse_job(sf, settings, storage, llm, jid, gid, None))
 
     async def check():
         async with sf() as session:
@@ -211,10 +211,22 @@ def test_run_parse_job_fails_no_extractable_text(runner_ctx, mock_ollama_questio
     asyncio.run(check())
 
 
+async def _fake_embed_text(_self, _text: str) -> list[float]:
+    return [0.1] * 128
+
+
+async def _fake_embed_texts(_self, texts: list[str]) -> list[list[float]]:
+    return [[0.1] * 128 for _ in texts]
+
+
 def test_run_generate_job_success(runner_ctx, monkeypatch):
     settings = runner_ctx.settings
-    ollama = runner_ctx.ollama
+    llm = runner_ctx.llm
+    embedder = runner_ctx.embedder
     sf = runner_ctx.session_factory
+
+    monkeypatch.setattr(OllamaClient, "embed_text", _fake_embed_text)
+    monkeypatch.setattr(OllamaClient, "embed_texts", _fake_embed_texts)
 
     monkeypatch.setattr(
         OllamaClient,
@@ -260,7 +272,7 @@ def test_run_generate_job_success(runner_ctx, monkeypatch):
         return gid, jid_parse
 
     gid, jid_parse = asyncio.run(setup())
-    asyncio.run(run_parse_job(sf, settings, storage, ollama, jid_parse, gid, None))
+    asyncio.run(run_parse_job(sf, settings, storage, llm, jid_parse, gid, None))
 
     async def mk_gen_job():
         async with sf() as session:
@@ -271,7 +283,7 @@ def test_run_generate_job_success(runner_ctx, monkeypatch):
             return j.id
 
     jid_gen = asyncio.run(mk_gen_job())
-    asyncio.run(run_generate_job(sf, settings, ollama, jid_gen, gid, None))
+    asyncio.run(run_generate_job(sf, settings, llm, embedder, jid_gen, gid, None))
 
     async def check():
         async with sf() as session:

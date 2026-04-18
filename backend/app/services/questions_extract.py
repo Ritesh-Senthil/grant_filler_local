@@ -1,11 +1,12 @@
 import asyncio
 import re
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.services.ollama import OllamaClient
+from app.services.llm_types import LlmClient
 
 
 class ExtractedQuestion(BaseModel):
@@ -73,10 +74,11 @@ def _validate_nonempty(questions: list[ExtractedQuestion]) -> list[ExtractedQues
 
 
 async def extract_questions_from_chunks(
-    ollama: OllamaClient,
+    llm: LlmClient,
     chunks: list[str],
     *,
     max_concurrency: int = 3,
+    on_chunk_complete: Callable[[int, int], Awaitable[None]] | None = None,
 ) -> list[ExtractedQuestion]:
     """Extract questions per text chunk. Chunks are processed in parallel (bounded) to reduce wall time."""
     if not chunks:
@@ -87,19 +89,32 @@ async def extract_questions_from_chunks(
 
     async def run_one(i: int, chunk: str) -> list[ExtractedQuestion]:
         user = f"Chunk {i+1}/{n}:\n\n{chunk}"
-        payload = await ollama.chat_json(SYSTEM, user, QuestionListPayload)
+        payload = await llm.chat_json(SYSTEM, user, QuestionListPayload)
         return list(payload.questions)
+
+    async def bump(done: int) -> None:
+        if on_chunk_complete:
+            await on_chunk_complete(done, n)
 
     if conc == 1:
         merged: list[ExtractedQuestion] = []
         for i, chunk in enumerate(chunks):
             merged.extend(await run_one(i, chunk))
+            await bump(i + 1)
     else:
         sem = asyncio.Semaphore(conc)
+        lock = asyncio.Lock()
+        completed = 0
 
         async def bounded(i: int, chunk: str) -> list[ExtractedQuestion]:
+            nonlocal completed
             async with sem:
-                return await run_one(i, chunk)
+                out = await run_one(i, chunk)
+            async with lock:
+                completed += 1
+                done = completed
+            await bump(done)
+            return out
 
         parts = await asyncio.gather(*(bounded(i, c) for i, c in enumerate(chunks)))
         merged = []

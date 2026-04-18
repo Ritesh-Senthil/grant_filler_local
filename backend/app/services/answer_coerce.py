@@ -1,5 +1,6 @@
 """Coerce and validate PATCH answer payloads against the question type."""
 
+import math
 import re
 from typing import Any
 
@@ -62,15 +63,23 @@ def coerce_answer_value(question: Question, value: Any) -> Any:
         if isinstance(value, bool):
             raise ValueError("Invalid number")
         if isinstance(value, (int, float)):
+            if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+                raise ValueError("Enter a valid number")
             return value
         if isinstance(value, str):
             s = value.strip()
             if not s:
                 return ""
             try:
-                return float(s) if "." in s else int(s)
+                if "." in s or "e" in s.lower():
+                    num = float(s)
+                else:
+                    num = int(s)
             except ValueError as e:
                 raise ValueError("Enter a valid number") from e
+            if isinstance(num, float) and (math.isnan(num) or math.isinf(num)):
+                raise ValueError("Enter a valid number")
+            return num
         raise ValueError("Expected a number")
 
     if t == "date":

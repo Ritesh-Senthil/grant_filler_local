@@ -461,13 +461,56 @@ async def fetch_web_segments(settings: Settings, url: str) -> tuple[list[TextSeg
     return [TextSegment(label=label, text=text)], meta
 
 
+_BOILERPLATE_HINTS = (
+    "cookie policy",
+    "privacy policy",
+    "terms of service",
+    "all rights reserved",
+    "enable javascript",
+    "javascript is required",
+    "sign in to continue",
+    "log in to continue",
+)
+
+
+def preview_quality_warnings(combined_text: str, char_count: int) -> list[str]:
+    """
+    Heuristic flags for UX (not authoritative). Shown next to URL preview before full parse.
+    """
+    warnings: list[str] = []
+    low = (combined_text or "").lower().strip()
+    if not low:
+        warnings.append(
+            "Preview is empty. This page may need login, or only load in a browser step-by-step. Try uploading a PDF of the form."
+        )
+        return warnings
+    if char_count < 2000 and len(low) < 500:
+        warnings.append(
+            "Little text was extracted. Multi-step wizards and login-only pages often won't show the full application here—prefer a PDF or Word export from the funder."
+        )
+    for hint in _BOILERPLATE_HINTS:
+        if hint in low:
+            warnings.append(
+                "Text looks like site chrome or legal pages rather than the grant form. Confirm you're on the application page, or use a PDF."
+            )
+            break
+    linkish = low.count("http://") + low.count("https://")
+    if linkish > 12 and char_count < 8000:
+        warnings.append(
+            "Lots of links versus prose—the readable form may not have loaded. Try Preview again after the page finishes loading, or upload a PDF."
+        )
+    return warnings[:4]
+
+
 async def preview_web_fetch(settings: Settings, url: str) -> dict:
     """Lightweight preview for UI (same safety rules as parse)."""
     segments, meta = await fetch_web_segments(settings, url)
     combined = "\n\n".join(s.text for s in segments)
     preview = combined[:4000]
+    char_count = len(combined)
     return {
         "preview": preview,
-        "char_count": len(combined),
+        "char_count": char_count,
+        "warnings": preview_quality_warnings(combined, char_count),
         "meta": meta,
     }

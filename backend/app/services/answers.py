@@ -3,9 +3,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.models import Organization, Question
-from app.services.ollama import OllamaClient
-from app.services.retrieve import retrieve_evidence
+from app.models import Question
+from app.services.llm_types import Embedder, LlmClient
+from app.services.retrieve import DEFAULT_GRANT_CHUNK_CAP, retrieve_evidence
 
 
 class AnswerItem(BaseModel):
@@ -19,7 +19,7 @@ class AnswerBatchPayload(BaseModel):
     answers: list[AnswerItem]
 
 
-def _answer_is_effectively_empty(val: Any, q_type: str) -> bool:
+def answer_value_is_effectively_empty(val: Any, q_type: str) -> bool:
     """True when there is nothing meaningful to show (model may omit needs_manual_input)."""
     if val is None:
         return True
@@ -37,15 +37,19 @@ def normalize_answer_flags(q: Question, answer_value: Any, needs_manual_input: b
     """If the draft is empty, always set needs_manual_input so the UI shows 'Needs manual input'."""
     if needs_manual_input:
         return answer_value, True
-    if _answer_is_effectively_empty(answer_value, q.q_type):
+    if answer_value_is_effectively_empty(answer_value, q.q_type):
         return answer_value, True
     return answer_value, False
 
 
 ANSWER_SYSTEM = """You draft grant application answers using ONLY the evidence provided.
+Evidence may include:
+- Rows labeled [Application source — chunk N]: text from this grant's uploaded file or imported web page.
+- Organization key/value facts (mission, address, programs, etc.) that the nonprofit has saved.
 Rules:
 - First person plural (we/our organization) where appropriate.
 - Do NOT invent specific facts (numbers, dates, names, programs) not present in evidence.
+- Prefer details from [Application source] chunks when they directly address the question (instructions, limits, funder-specific wording).
 - If evidence is insufficient to answer responsibly, set answer_value to the string "INSUFFICIENT_INFO" for text types,
   or null with needs_manual_input true.
 - Match question type exactly:
@@ -67,16 +71,27 @@ def _evidence_block(evs: list) -> str:
 
 
 async def generate_answers_batch(
-    ollama: OllamaClient,
-    org: Organization,
+    llm: LlmClient,
+    embedder: Embedder,
     facts: list,
     questions: list[Question],
+    *,
+    grant_chunks: list[str] | None = None,
+    grant_chunk_cap: int | None = None,
 ) -> list[AnswerItem]:
     if not questions:
         return []
+    cap = grant_chunk_cap if grant_chunk_cap is not None else DEFAULT_GRANT_CHUNK_CAP
     items: list[AnswerItem] = []
     for q in questions:
-        evs = retrieve_evidence(q.question_text, org, facts, top_k=10)
+        evs = await retrieve_evidence(
+            embedder,
+            q.question_text,
+            facts,
+            top_k=12,
+            grant_chunks=grant_chunks,
+            grant_chunk_cap=cap,
+        )
         user = (
             f"Question ID: {q.question_id}\n"
             f"Question: {q.question_text}\n"
@@ -86,7 +101,7 @@ async def generate_answers_batch(
             f"Evidence:\n{_evidence_block(evs)}\n\n"
             "Return JSON: {\"answers\":[{\"question_id\":...}]}"
         )
-        payload = await ollama.chat_json(ANSWER_SYSTEM, user, AnswerBatchPayload)
+        payload = await llm.chat_json(ANSWER_SYSTEM, user, AnswerBatchPayload)
         if payload.answers:
             a = payload.answers[0]
             a.question_id = q.question_id

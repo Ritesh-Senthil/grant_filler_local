@@ -27,6 +27,8 @@ class Organization(Base):
     __tablename__ = "organizations"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: "default-org")
+    header_display_name: Mapped[str] = mapped_column(String(512), default="")
+    banner_file_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     legal_name: Mapped[str] = mapped_column(String(512), default="")
     mission_short: Mapped[str] = mapped_column(Text, default="")
     mission_long: Mapped[str] = mapped_column(Text, default="")
@@ -44,6 +46,10 @@ class Fact(Base):
     key: Mapped[str] = mapped_column(String(256), default="")
     value: Mapped[str] = mapped_column(Text, default="")
     source: Mapped[str] = mapped_column(String(512), default="")
+    learned_from_grant_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("grants.id", ondelete="SET NULL"), nullable=True
+    )
+    learned_from_question_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     org: Mapped["Organization"] = relationship("Organization", back_populates="facts")
@@ -61,6 +67,8 @@ class Grant(Base):
     source_file_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     file_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
     export_file_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Text chunks from last successful parse (PDF/DOCX/web); used for grant-grounded answer drafting.
+    source_chunks_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
