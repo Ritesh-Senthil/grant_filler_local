@@ -8,6 +8,7 @@ from app.services.web_fetch import (
     _collect_pdf_hrefs,
     _html_to_text,
     assert_safe_url,
+    preview_quality_warnings,
 )
 
 
@@ -49,6 +50,19 @@ def test_collect_pdf_hrefs():
     hrefs = _collect_pdf_hrefs(html, "https://grant.example.org/apply")
     assert "https://grant.example.org/files/rfp.pdf" in hrefs
     assert "https://other.example.org/a.PDF?x=1" in hrefs
+
+
+def test_preview_quality_warnings_short_text():
+    w = preview_quality_warnings("hello world", 50)
+    assert any("short" in x.lower() or "wizard" in x.lower() for x in w)
+
+
+def test_preview_quality_warnings_boilerplate():
+    w = preview_quality_warnings(
+        "Welcome. Privacy policy and terms of service. Cookie policy applies.",
+        8000,
+    )
+    assert w and any("chrome" in x.lower() or "legal" in x.lower() or "pdf" in x.lower() for x in w)
 
 
 def test_html_to_text_basic():

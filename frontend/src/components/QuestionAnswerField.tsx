@@ -12,16 +12,19 @@ function toYesNo(v: unknown): "" | "Yes" | "No" {
   return "";
 }
 
+/**
+ * Controlled answer editor: updates the parent draft via `onValueChange` only
+ * (no API calls — the grant page saves explicitly).
+ */
 export function QuestionAnswerField({
   q,
   a,
-  onSave,
+  onValueChange,
   onUserEdit,
 }: {
   q: Question;
   a: Answer | undefined;
-  onSave: (value: unknown) => void | Promise<void>;
-  /** Fires when the user changes input (before save on blur). */
+  onValueChange: (value: unknown) => void;
   onUserEdit?: () => void;
 }) {
   const t = q.type;
@@ -39,7 +42,7 @@ export function QuestionAnswerField({
             checked={sel === "Yes"}
             onChange={() => {
               touch();
-              void onSave("Yes");
+              onValueChange("Yes");
             }}
           />
           Yes
@@ -51,7 +54,7 @@ export function QuestionAnswerField({
             checked={sel === "No"}
             onChange={() => {
               touch();
-              void onSave("No");
+              onValueChange("No");
             }}
           />
           No
@@ -63,7 +66,7 @@ export function QuestionAnswerField({
             checked={sel === ""}
             onChange={() => {
               touch();
-              void onSave("");
+              onValueChange("");
             }}
           />
           Clear
@@ -86,7 +89,7 @@ export function QuestionAnswerField({
               checked={sel === opt}
               onChange={() => {
                 touch();
-                void onSave(opt);
+                onValueChange(opt);
               }}
             />
             {opt}
@@ -97,31 +100,37 @@ export function QuestionAnswerField({
   }
 
   if (t === "multi_choice" && q.options?.length) {
-    return <MultiChoiceField q={q} a={a} onSave={onSave} onUserEdit={onUserEdit} />;
+    return <MultiChoiceField q={q} a={a} onValueChange={onValueChange} onUserEdit={onUserEdit} />;
   }
 
   if (t === "number") {
-    return <NumberField a={a} onSave={onSave} onUserEdit={onUserEdit} />;
+    return <NumberField a={a} onValueChange={onValueChange} onUserEdit={onUserEdit} />;
   }
 
   if (t === "date") {
-    return <DateField a={a} onSave={onSave} onUserEdit={onUserEdit} />;
+    return <DateField a={a} onValueChange={onValueChange} onUserEdit={onUserEdit} />;
   }
 
   return (
-    <TextLikeField q={q} a={a} onSave={onSave} singleLine={t === "text"} onUserEdit={onUserEdit} />
+    <TextLikeField
+      q={q}
+      a={a}
+      onValueChange={onValueChange}
+      singleLine={t === "text"}
+      onUserEdit={onUserEdit}
+    />
   );
 }
 
 function MultiChoiceField({
   q,
   a,
-  onSave,
+  onValueChange,
   onUserEdit,
 }: {
   q: Question;
   a: Answer | undefined;
-  onSave: (value: unknown) => void | Promise<void>;
+  onValueChange: (value: unknown) => void;
   onUserEdit?: () => void;
 }) {
   const raw = a?.answer_value;
@@ -137,7 +146,7 @@ function MultiChoiceField({
     onUserEdit?.();
     const next = selected.includes(opt) ? selected.filter((x) => x !== opt) : [...selected, opt];
     setSelected(next);
-    void onSave(next);
+    onValueChange(next);
   }
 
   return (
@@ -154,11 +163,11 @@ function MultiChoiceField({
 
 function NumberField({
   a,
-  onSave,
+  onValueChange,
   onUserEdit,
 }: {
   a: Answer | undefined;
-  onSave: (value: unknown) => void | Promise<void>;
+  onValueChange: (value: unknown) => void;
   onUserEdit?: () => void;
 }) {
   const v = a?.answer_value;
@@ -172,28 +181,31 @@ function NumberField({
     else setLocal(String(v));
   }, [v]);
 
+  function push(s: string) {
+    onUserEdit?.();
+    setLocal(s);
+    const t = s.trim();
+    onValueChange(t === "" ? "" : s);
+  }
+
   return (
     <input
       type="text"
       inputMode="decimal"
       className={baseField}
       value={local}
-      onChange={(e) => {
-        onUserEdit?.();
-        setLocal(e.target.value);
-      }}
-      onBlur={() => void onSave(local)}
+      onChange={(e) => push(e.target.value)}
     />
   );
 }
 
 function DateField({
   a,
-  onSave,
+  onValueChange,
   onUserEdit,
 }: {
   a: Answer | undefined;
-  onSave: (value: unknown) => void | Promise<void>;
+  onValueChange: (value: unknown) => void;
   onUserEdit?: () => void;
 }) {
   const v = a?.answer_value;
@@ -210,9 +222,10 @@ function DateField({
       value={local}
       onChange={(e) => {
         onUserEdit?.();
-        setLocal(e.target.value);
+        const s = e.target.value;
+        setLocal(s);
+        onValueChange(s);
       }}
-      onBlur={() => void onSave(local)}
     />
   );
 }
@@ -220,13 +233,13 @@ function DateField({
 function TextLikeField({
   q,
   a,
-  onSave,
+  onValueChange,
   singleLine,
   onUserEdit,
 }: {
   q: Question;
   a: Answer | undefined;
-  onSave: (value: unknown) => void | Promise<void>;
+  onValueChange: (value: unknown) => void;
   singleLine: boolean;
   onUserEdit?: () => void;
 }) {
@@ -252,6 +265,12 @@ function TextLikeField({
       </p>
     ) : null;
 
+  function push(s: string) {
+    onUserEdit?.();
+    setLocal(s);
+    onValueChange(s);
+  }
+
   if (singleLine) {
     return (
       <div className="space-y-1">
@@ -260,11 +279,7 @@ function TextLikeField({
           className={baseField}
           maxLength={maxLen ?? undefined}
           value={local}
-          onChange={(e) => {
-            onUserEdit?.();
-            setLocal(e.target.value);
-          }}
-          onBlur={() => void onSave(local)}
+          onChange={(e) => push(e.target.value)}
         />
         {hint}
       </div>
@@ -277,11 +292,7 @@ function TextLikeField({
         className={`${baseField} min-h-[100px]`}
         maxLength={maxLen ?? undefined}
         value={local}
-        onChange={(e) => {
-          onUserEdit?.();
-          setLocal(e.target.value);
-        }}
-        onBlur={() => void onSave(local)}
+        onChange={(e) => push(e.target.value)}
       />
       {hint}
     </div>

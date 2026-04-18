@@ -2,23 +2,26 @@
 
 from pydantic import BaseModel, Field
 
-from app.models import Answer, Organization, Question
-from app.services.ollama import OllamaClient
+from app.models import Answer, Question
+from app.services.llm_types import LlmClient
 
 
 class ExtractedOrgFact(BaseModel):
     key: str = Field(..., description="Short label, e.g. 'Service area' or 'Annual budget'")
     value: str = Field(..., description="Concrete fact drawn from the answer")
+    source_question_id: str = Field(
+        default="",
+        description="The question_id from the grant Q&A block this fact is primarily drawn from",
+    )
 
 
 class LearnOrgFactsPayload(BaseModel):
     facts: list[ExtractedOrgFact] = Field(default_factory=list)
 
 
-SYSTEM = """You help nonprofit staff reuse grant answers as organization profile facts.
+SYSTEM = """You help nonprofit staff reuse grant answers as organization facts.
 
 You receive:
-- A short organization profile (name, mission).
 - Existing saved facts (key: value) — do not repeat these; only add NEW or materially richer facts.
 - Question/answer pairs from one grant application.
 
@@ -26,10 +29,12 @@ Task: Propose up to 12 concise, reusable facts that would help write future gran
 Rules:
 - Only include facts clearly supported by the answers (no invention).
 - Skip vague filler, duplicates of existing facts, or grant-specific deadlines unless they define ongoing policy.
+  (The server also merges semantically similar facts via embeddings, so near-duplicate wording is handled automatically.)
 - Keys: short noun phrases (2–6 words). Values: one or two sentences max.
+- For each fact, set source_question_id to the question_id from the Q&A block below when the fact is mainly grounded in that answer (copy the id exactly from the [question_id: ...] line).
 - If nothing new is extractable, return {"facts":[]}.
 
-Return JSON only: {"facts":[{"key":"","value":""},...]}"""
+Return JSON only: {"facts":[{"key":"","value":"","source_question_id":""},...]}"""
 
 
 def answer_value_text(a: Answer) -> str:
@@ -50,15 +55,11 @@ def has_any_nonempty_answer(answers: list[Answer]) -> bool:
 
 
 def build_learn_org_user_prompt(
-    org: Organization,
     existing: list[tuple[str, str]],
     pairs: list[tuple[Question, Answer]],
 ) -> str:
     lines = [
-        f"Organization legal name: {org.legal_name or '(not set)'}",
-        f"Mission (short): {org.mission_short or '(not set)'}",
-        "",
-        "Existing saved facts:",
+        "Existing saved organization facts:",
     ]
     if not existing:
         lines.append("(none)")
@@ -71,6 +72,7 @@ def build_learn_org_user_prompt(
         txt = _answer_text(q, a)
         if not txt:
             continue
+        lines.append(f"[question_id: {q.question_id}]")
         lines.append(f"Q: {q.question_text}")
         lines.append(f"A: {txt}")
         lines.append("")
@@ -89,8 +91,7 @@ def nonempty_qa_pairs(pairs: list[tuple[Question, Answer]]) -> list[tuple[Questi
 
 
 async def extract_new_facts_from_grant(
-    ollama: OllamaClient,
-    org: Organization,
+    llm: LlmClient,
     existing_facts: list,
     pairs: list[tuple[Question, Answer]],
 ) -> list[ExtractedOrgFact]:
@@ -98,6 +99,6 @@ async def extract_new_facts_from_grant(
     if not nonempty_qa_pairs(pairs):
         return []
     existing_kv = [(f.key or "", f.value or "") for f in existing_facts]
-    user = build_learn_org_user_prompt(org, existing_kv, pairs)
-    payload = await ollama.chat_json(SYSTEM, user, LearnOrgFactsPayload)
+    user = build_learn_org_user_prompt(existing_kv, pairs)
+    payload = await llm.chat_json(SYSTEM, user, LearnOrgFactsPayload)
     return list(payload.facts or [])

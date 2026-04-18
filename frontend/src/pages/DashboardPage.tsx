@@ -7,6 +7,8 @@ export function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [llmOk, setLlmOk] = useState<boolean | null>(null);
+  const [llmProvider, setLlmProvider] = useState<string | null>(null);
 
   const load = () => {
     api
@@ -17,6 +19,19 @@ export function DashboardPage() {
 
   useEffect(() => {
     load();
+  }, []);
+
+  useEffect(() => {
+    api
+      .config()
+      .then((c) => {
+        setLlmOk(c.llm_configured);
+        setLlmProvider(c.llm_provider);
+      })
+      .catch(() => {
+        setLlmOk(false);
+        setLlmProvider(null);
+      });
   }, []);
 
   async function create(e: React.FormEvent) {
@@ -40,11 +55,57 @@ export function DashboardPage() {
 
   return (
     <div className="space-y-8">
+      {llmOk === false && (
+        <div
+          className="rounded-xl border border-amber-200/90 dark:border-amber-800/60 bg-amber-50/95 dark:bg-amber-950/45 px-4 py-3 text-sm text-amber-950 dark:text-amber-100"
+          role="status"
+        >
+          <p className="font-medium text-amber-900 dark:text-amber-200">AI assistant not ready</p>
+          <p className="mt-1 text-amber-900/90 dark:text-amber-100/90 leading-relaxed">
+            {llmProvider === "gemini" ? (
+              <>
+                Set <code className="text-xs">GOOGLE_API_KEY</code> in your backend <code className="text-xs">.env</code> ({" "}
+                <a
+                  href="https://aistudio.google.com/apikey"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline underline-offset-2 font-medium text-amber-950 dark:text-amber-50"
+                >
+                  Google AI Studio
+                </a>
+                ). Draft answers and question extraction need a valid API key.
+              </>
+            ) : (
+              <>
+                Start{" "}
+                <a
+                  href="https://ollama.com/"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline underline-offset-2 font-medium text-amber-950 dark:text-amber-50"
+                >
+                  Ollama
+                </a>{" "}
+                on this computer and pull the model named in your backend config (see <code className="text-xs">OLLAMA_MODEL</code> in{" "}
+                <code className="text-xs">.env</code>). Draft answers and finding questions will not work until it is running.
+              </>
+            )}{" "}
+            Configure the model provider in{" "}
+            <Link
+              to="/settings"
+              className="font-medium underline underline-offset-2 text-amber-950 dark:text-amber-50"
+            >
+              Settings
+            </Link>
+            .
+          </p>
+        </div>
+      )}
       <div>
         <h1 className="text-2xl font-semibold text-slate-900 dark:text-white">Grants</h1>
         <p className="text-slate-600 dark:text-slate-400 mt-1 max-w-2xl">
           Start with a name. On the next screen you&apos;ll add the application (file or web page) and
-          get draft answers using your organization profile.
+          get draft answers using your organization facts.
         </p>
       </div>
 

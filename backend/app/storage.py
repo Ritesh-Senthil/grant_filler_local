@@ -3,6 +3,8 @@ from pathlib import Path
 
 from app.config import Settings
 
+_ORG_ID_RE = re.compile(r"[^a-zA-Z0-9._-]+")
+
 
 class StorageService:
     """Blob storage under data_dir/blobs with traversal-safe keys."""
@@ -57,3 +59,15 @@ class StorageService:
     @staticmethod
     def export_key(grant_id: str, ext: str = "pdf") -> str:
         return f"exports/{grant_id}.{ext}"
+
+    @staticmethod
+    def org_banner_key(org_id: str, ext: str) -> str:
+        """Storage key for an org header banner (single file per org; ext is jpg/png/webp/gif)."""
+        parts = [p for p in _ORG_ID_RE.sub("_", org_id).strip("_").split("/") if p]
+        safe = "_".join(parts)[:64] if parts else "org"
+        e = (ext or "").lower().lstrip(".")
+        if e == "jpeg":
+            e = "jpg"
+        if e not in ("jpg", "png", "webp", "gif"):
+            raise ValueError("Unsupported banner image type")
+        return f"orgs/{safe}/banner.{e}"

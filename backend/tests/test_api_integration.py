@@ -81,16 +81,12 @@ def test_org_put_get(test_client):
     test_client.put(
         "/api/v1/org",
         json={
-            "legal_name": "Test Org Inc",
-            "mission_short": "We help.",
-            "mission_long": "",
-            "address": "1 Main St",
-            "extra_sections": [],
+            "header_display_name": "Test Org Inc",
         },
     )
     r = test_client.get("/api/v1/org")
     assert r.status_code == 200
-    assert r.json()["legal_name"] == "Test Org Inc"
+    assert r.json()["header_display_name"] == "Test Org Inc"
 
 
 def test_fact_crud(test_client):
@@ -202,6 +198,128 @@ def test_patch_answer_creates_row(test_client):
     assert pa.status_code == 200
     assert pa.json()["answer_value"] == "Manual answer"
     assert pa.json()["reviewed"] is True
+    assert pa.json()["needs_manual_input"] is False
+
+
+def test_mark_reviewed_empty_returns_422(test_client):
+    import asyncio
+
+    from app.models import Question
+
+    r = test_client.post("/api/v1/grants", json={"name": "EmptyReview", "source_type": "pdf"})
+    gid = r.json()["id"]
+    sf = test_client.app.state.session_factory
+
+    async def add_question():
+        async with sf() as session:
+            session.add(
+                Question(
+                    grant_id=gid,
+                    question_id="q-empty",
+                    question_text="Say something",
+                    q_type="textarea",
+                    sort_order=0,
+                )
+            )
+            await session.commit()
+
+    asyncio.run(add_question())
+
+    bad = test_client.patch(
+        f"/api/v1/grants/{gid}/questions/q-empty",
+        json={"reviewed": True},
+    )
+    assert bad.status_code == 422
+
+
+def test_mark_reviewed_clears_needs_manual_input(test_client):
+    import asyncio
+
+    from app.models import Answer, Question
+
+    r = test_client.post("/api/v1/grants", json={"name": "NMI", "source_type": "pdf"})
+    gid = r.json()["id"]
+    sf = test_client.app.state.session_factory
+
+    async def seed():
+        async with sf() as session:
+            session.add(
+                Question(
+                    grant_id=gid,
+                    question_id="q1",
+                    question_text="?",
+                    q_type="textarea",
+                    sort_order=0,
+                )
+            )
+            session.add(
+                Answer(
+                    grant_id=gid,
+                    question_id="q1",
+                    answer_value="Filled in.",
+                    reviewed=False,
+                    needs_manual_input=True,
+                )
+            )
+            await session.commit()
+
+    asyncio.run(seed())
+
+    ok = test_client.patch(
+        f"/api/v1/grants/{gid}/questions/q1",
+        json={"reviewed": True},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["reviewed"] is True
+    assert ok.json()["needs_manual_input"] is False
+
+
+def test_reorder_questions(test_client):
+    import asyncio
+
+    from app.models import Question
+
+    r = test_client.post("/api/v1/grants", json={"name": "Reorder", "source_type": "pdf"})
+    gid = r.json()["id"]
+    sf = test_client.app.state.session_factory
+
+    async def seed():
+        async with sf() as session:
+            for i, qid in enumerate(["a", "b", "c"]):
+                session.add(
+                    Question(
+                        grant_id=gid,
+                        question_id=qid,
+                        question_text=f"Q {qid}",
+                        q_type="textarea",
+                        sort_order=i,
+                    )
+                )
+            await session.commit()
+
+    asyncio.run(seed())
+
+    rr = test_client.put(
+        f"/api/v1/grants/{gid}/questions/reorder",
+        json={"question_ids": ["c", "a", "b"]},
+    )
+    assert rr.status_code == 200
+    order = [q["question_id"] for q in rr.json()["questions"]]
+    assert order == ["c", "a", "b"]
+    for i, q in enumerate(rr.json()["questions"]):
+        assert q["sort_order"] == i
+
+    bad = test_client.put(
+        f"/api/v1/grants/{gid}/questions/reorder",
+        json={"question_ids": ["c", "a"]},
+    )
+    assert bad.status_code == 422
+
+    dup = test_client.put(
+        f"/api/v1/grants/{gid}/questions/reorder",
+        json={"question_ids": ["a", "a", "b"]},
+    )
+    assert dup.status_code == 422
 
 
 def test_learn_org_without_questions_returns_400(test_client):
@@ -216,10 +334,42 @@ def test_export_markdown_without_questions(test_client):
     gid = r.json()["id"]
     ex = test_client.post(f"/api/v1/grants/{gid}/export", json={"format": "markdown"})
     assert ex.status_code == 200
-    path = ex.json()["download_path"].lstrip("/")
-    dl = test_client.get(f"/{path}")
+    body = ex.json()
+    assert body.get("filename", "").endswith(".md")
+    path = body["download_path"].lstrip("/")
+    dl = test_client.get(f"/{path}", params={"filename": body["filename"]})
     assert dl.status_code == 200
     assert b"# G" in dl.content
+    cd = dl.headers.get("content-disposition", "")
+    assert "attachment" in cd.lower()
+    assert "filename=" in cd.lower()
+
+
+def test_llm_preference_patch_and_delete(test_client):
+    r0 = test_client.get("/api/v1/config")
+    assert r0.status_code == 200
+    assert r0.json().get("llm_provider_source") == "env"
+
+    r = test_client.patch("/api/v1/llm", json={"llm_provider": "ollama"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["llm_provider"] == "ollama"
+    assert body["llm_provider_source"] == "user"
+
+    r2 = test_client.delete("/api/v1/llm")
+    assert r2.status_code == 200
+    assert r2.json()["llm_provider_source"] == "env"
+
+
+def test_duplicate_grant_without_file(test_client):
+    r = test_client.post("/api/v1/grants", json={"name": "Original", "source_type": "pdf"})
+    gid = r.json()["id"]
+    r2 = test_client.post(f"/api/v1/grants/{gid}/duplicate", json={})
+    assert r2.status_code == 200
+    body = r2.json()
+    assert body["id"] != gid
+    assert body["name"] == "Original (copy)"
+    assert body["source_chunk_count"] == 0
 
 
 def test_delete_grant(test_client):

@@ -1,16 +1,18 @@
 # GrantFiller (local)
 
-Local-first app to **extract grant application questions** from PDF/DOCX and **draft answers** from your organization profile and facts (via **Ollama**). Review answers, then **export a Q&A PDF**.
+Local-first app to **extract grant application questions** from PDF/DOCX and **draft answers** from your organization profile and facts. The backend uses either **Ollama** (local) or **Google Gemini** (API key), configured with `LLM_PROVIDER`. Review answers, then **export a Q&A PDF**.
 
 ## Prerequisites
 
 - Python 3.11+
 - Node 18+
-- [Ollama](https://ollama.com/) running locally with a capable model (default in config: `qwen2.5:7b`)
+- One of:
+  - **[Ollama](https://ollama.com/)** running locally with a capable model (default: `qwen2.5:7b-instruct`), or
+  - A **Google AI Studio** API key if you set `LLM_PROVIDER=gemini` (see `.env.example`)
 
 ## Quick start
 
-1. **Ollama** — pull a model, e.g. `ollama pull qwen2.5:7b`.
+1. **Model provider** — either start **Ollama** and pull a model (`ollama pull qwen2.5:7b-instruct`), or set `LLM_PROVIDER=gemini` and `GOOGLE_API_KEY` in `.env`.
 
 2. **Backend**
    ```bash
@@ -18,7 +20,8 @@ Local-first app to **extract grant application questions** from PDF/DOCX and **d
    python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
    pip install -e ".[dev]"
    playwright install chromium   # needed for “paste URL” on JS-heavy grant portals
-   cp ../.env.example .env   # optional; edit OLLAMA_MODEL / DATA_DIR
+   ollama pull nomic-embed-text    # optional: avoids duplicate facts when learning from answers
+   cp ../.env.example .env   # optional; edit OLLAMA_MODEL, LLM_PROVIDER, GOOGLE_API_KEY, DATA_DIR
    uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
    ```
 

@@ -1,6 +1,16 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
+    <!-- Keep localStorage key in sync with THEME_STORAGE_KEY in src/theme.ts (avoids light flash before JS). -->
+    <script>
+      (function () {
+        try {
+          var v = localStorage.getItem("grantfiller.theme");
+          if (v === "dark") document.documentElement.classList.add("dark");
+          else if (v === "light") document.documentElement.classList.remove("dark");
+        } catch (e) {}
+      })();
+    </script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GrantFiller</title>

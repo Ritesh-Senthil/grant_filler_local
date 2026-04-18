@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 from collections.abc import Generator
+from pathlib import Path
 
 import pytest
 from sqlalchemy import delete, select
@@ -26,9 +28,24 @@ async def _wipe_all_data() -> None:
         await session.execute(delete(Fact))
         await session.flush()
         r = await session.execute(select(Organization).where(Organization.id == "default-org"))
-        if r.scalar_one_or_none() is None:
+        org = r.scalar_one_or_none()
+        if org is None:
             session.add(Organization(id="default-org"))
+        else:
+            org.header_display_name = ""
+            org.banner_file_key = None
+            org.legal_name = ""
+            org.mission_short = ""
+            org.mission_long = ""
+            org.address = ""
+            org.extra_sections = None
         await session.commit()
+
+    data_dir = Path(os.environ.get("DATA_DIR", ""))
+    if data_dir.is_dir():
+        (data_dir / "app_preferences.json").unlink(missing_ok=True)
+        (data_dir / "enhancement_requests.jsonl").unlink(missing_ok=True)
+        shutil.rmtree(data_dir / "blobs" / "orgs", ignore_errors=True)
 
 
 @pytest.fixture(scope="session")

@@ -1,10 +1,8 @@
-import json
-import re
-
 import httpx
 from pydantic import BaseModel
 
 from app.config import Settings
+from app.services.json_llm import chat_json_with_repair
 
 
 def _ollama_error_body(r: httpx.Response) -> str | None:
@@ -24,9 +22,12 @@ def _is_model_not_found(status: int, error_msg: str | None) -> bool:
 
 
 class OllamaClient:
+    """Local Ollama: chat + embeddings (implements LlmClient + Embedder protocols)."""
+
     def __init__(self, settings: Settings):
         self.base = settings.ollama_base_url.rstrip("/")
         self.model = settings.ollama_model
+        self.embed_model = settings.ollama_embed_model
         self.timeout = settings.ollama_timeout_s
 
     def _ollama_troubleshoot_hint(self) -> str:
@@ -89,59 +90,46 @@ class OllamaClient:
             return msg.get("content") or ""
 
     async def chat_json(self, system: str, user: str, response_model: type[BaseModel]) -> BaseModel:
-        raw = await self.chat(system, user)
-        text = _extract_json(raw)
-        try:
-            return response_model.model_validate_json(text)
-        except Exception:
-            repair_user = (
-                user
-                + "\n\nYour previous reply was not valid JSON. Reply with ONLY a single JSON value, no markdown."
-            )
-            raw2 = await self.chat(
-                "You output only valid JSON. No prose, no markdown fences.",
-                repair_user,
-            )
-            text2 = _extract_json(raw2)
-            return response_model.model_validate_json(text2)
+        return await chat_json_with_repair(self.chat, system, user, response_model)
 
+    async def embed_text(self, text: str) -> list[float]:
+        """Single text embedding via Ollama /api/embeddings (tries `input` then `prompt`)."""
+        t = (text or "").strip() or "."
+        last_err: str | None = None
+        async with httpx.AsyncClient(timeout=min(self.timeout, 120.0)) as client:
+            for key in ("input", "prompt"):
+                r = await client.post(
+                    f"{self.base}/api/embeddings",
+                    json={"model": self.embed_model, key: t},
+                )
+                err = _ollama_error_body(r)
+                if _is_model_not_found(r.status_code, err):
+                    raise RuntimeError(
+                        f"Ollama embedding model not found: {self.embed_model}. "
+                        f"Run: ollama pull {self.embed_model}"
+                    ) from None
+                if r.status_code != 200:
+                    last_err = err or r.text or str(r.status_code)
+                    continue
+                data = r.json()
+                emb = data.get("embedding")
+                if isinstance(emb, list) and emb and isinstance(emb[0], (int, float)):
+                    return [float(x) for x in emb]
+                last_err = "missing embedding in response"
+        raise RuntimeError(
+            f"Ollama embeddings failed ({self.embed_model}): {last_err or 'unknown'}. "
+            f"Install with: ollama pull {self.embed_model}"
+        )
 
-def _first_balanced_json_object(s: str) -> str | None:
-    """Return the first top-level `{...}` slice so extra `}` or prose after valid JSON does not break parsing."""
-    s = s.strip()
-    start = s.find("{")
-    if start == -1:
-        return None
-    depth = 0
-    in_string = False
-    escape = False
-    for i in range(start, len(s)):
-        ch = s[i]
-        if in_string:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_string = False
-            continue
-        if ch == '"':
-            in_string = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return s[start : i + 1]
-    return None
+    async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Embed many strings in parallel (bounded concurrency)."""
+        import asyncio
 
+        safe = [(t or "").strip() or "." for t in texts]
+        sem = asyncio.Semaphore(8)
 
-def _extract_json(text: str) -> str:
-    text = text.strip()
-    fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-    if fence:
-        text = fence.group(1).strip()
-    balanced = _first_balanced_json_object(text)
-    if balanced is not None:
-        return balanced
-    return text
+        async def bounded(s: str) -> list[float]:
+            async with sem:
+                return await self.embed_text(s)
+
+        return await asyncio.gather(*[bounded(t) for t in safe])
