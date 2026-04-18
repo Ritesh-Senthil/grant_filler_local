@@ -53,7 +53,8 @@ from app.schemas import (
 from app.services.answer_coerce import coerce_answer_value
 from app.services.evidence_ids import normalize_evidence_fact_ids
 from app.services.answers import answer_value_is_effectively_empty
-from app.services.export import build_qa_docx, build_qa_markdown, build_qa_pdf
+from app.services.export import ExportContext, build_qa_docx, build_qa_markdown, build_qa_pdf
+from app.services.export_datetime import format_export_timestamp
 from app.services.learn_org_facts import has_any_nonempty_answer
 from app.services.web_fetch import WebFetchError, preview_web_fetch
 from app.preferences import (
@@ -784,6 +785,7 @@ async def export_grant(
     body: ExportRequest,
     session: SessionDep,
     storage: StorageDep,
+    settings: SettingsDep,
 ):
     g = await session.get(Grant, grant_id)
     if not g:
@@ -791,16 +793,23 @@ async def export_grant(
     await session.refresh(g, ["questions", "answers"])
     qs = list(g.questions or [])
     ans = list(g.answers or [])
+    loc = load_locale_override(settings.data_dir) or "iso"
+    at_label = format_export_timestamp(datetime.now(timezone.utc), loc)
+    org = await session.get(Organization, "default-org")
+    org_line: str | None = None
+    if org is not None:
+        org_line = (org.header_display_name or org.legal_name or "").strip() or None
+    xctx = ExportContext(exported_at_label=at_label, organization_line=org_line)
     if body.format == "markdown":
-        text = build_qa_markdown(g, qs, ans)
+        text = build_qa_markdown(g, qs, ans, xctx)
         key = StorageService.export_key(grant_id, "md")
         storage.write_bytes(key, text.encode("utf-8"))
     elif body.format == "docx":
-        docx_bytes = build_qa_docx(g, qs, ans)
+        docx_bytes = build_qa_docx(g, qs, ans, xctx)
         key = StorageService.export_key(grant_id, "docx")
         storage.write_bytes(key, docx_bytes)
     else:
-        pdf_bytes = build_qa_pdf(g, qs, ans)
+        pdf_bytes = build_qa_pdf(g, qs, ans, xctx)
         key = StorageService.export_key(grant_id, "pdf")
         storage.write_bytes(key, pdf_bytes)
     g.export_file_key = key

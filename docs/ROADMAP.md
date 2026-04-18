@@ -60,16 +60,16 @@ This document captures planned work and locked product decisions. Use it when sc
 
 ## E. PDF export
 
-- [ ] One polished template; no internal/debug tags in body text.
-- [ ] **Exported at** timestamp using **Settings** locale/date preferences.
-- [ ] Sensible default filename; optional alignment with company/banner branding.
+- [x] One polished template; no internal/debug tags in body text (and parallel **DOCX** / Markdown polish in the same export pipeline).
+- [x] **Exported at** timestamp using **Settings** locale date preferences (`iso` / `en-US` / `en-GB` in `app_preferences.json`).
+- [x] Sensible default download filename; org **header or legal name** in export **body** when set (branding; filename still grant + date). See `docs/BUILD_PLAN_E_F.md`.
 
 ---
 
 ## F. File downloads
 
-- [ ] Backend: `Content-Disposition: attachment` and strong filenames for exports.
-- [ ] Frontend: download blob pattern — **no** inline open-in-tab for these assets.
+- [x] Backend: `Content-Disposition: attachment` and strong filenames for `exports/*` (RFC 6266 `filename*`).  
+- [x] Frontend: `downloadExportedFile` blob + `<a download>` (tests in `downloadFile.test.ts`). See `docs/BUILD_PLAN_E_F.md`.
 
 ---
 
@@ -126,7 +126,7 @@ This document captures planned work and locked product decisions. Use it when sc
 1. **J** (theme bug) — small, unblocks trust in UI state.  
 2. **B + C** — question order + review rules — core UX.  
 3. **D** — per-grant save + confirmation — aligns API usage.  
-4. **E + F** — PDF polish + downloads.  
+4. **E + F** — PDF/DOCX polish + downloads (**shipped**; `docs/BUILD_PLAN_E_F.md`).  
 5. **A + I + L** — Settings, banner, profile.  
 6. **H + M** — auth and internal email (depends on mail story).  
 7. **G** — verify Ollama/qwen defaults end-to-end.  
@@ -143,3 +143,4 @@ Reorder if a release needs branding or auth earlier.
 | 2026-04-12 | Initial roadmap from product comments and follow-up decisions. |
 | 2026-04-12 | J shipped: persisted theme + SPA navigation on grant delete/duplicate. |
 | 2026-04-15 | B + C shipped: question reorder API + drag UI, list-order labels, reviewed blocks empty + clears needs-input. |
+| 2026-04-18 | E + F shipped: PDF/DOCX/MD export polish, **Exported** line from Settings locale, org line in export body; `exports/*` attachment downloads + `downloadFile` client pattern (`docs/BUILD_PLAN_E_F.md`). |

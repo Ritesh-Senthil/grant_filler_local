@@ -1,4 +1,4 @@
-"""Sanitized export download names (ISO date; locale deferred until Settings)."""
+"""Sanitized export download names; display timestamps for exports use `export_datetime` + Settings locale."""
 
 from __future__ import annotations
 
