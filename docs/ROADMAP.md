@@ -104,7 +104,7 @@ This document captures planned work and locked product decisions. Use it when sc
 
 ## K. Documentation
 
-- [ ] **`FEATURES.md`** (or equivalent): **end-user** overview + **contributor** sections (env, Ollama, defaults). Keep Settings feature bullets **abbreviated**; doc holds depth.
+- [x] **`FEATURES.md`** (repo root): end-user + contributor overview (features, architecture, costs, dependencies). Settings feature bullets stay **abbreviated**; depth lives in this file.
 
 ---
 
@@ -144,3 +144,4 @@ Reorder if a release needs branding or auth earlier.
 | 2026-04-12 | J shipped: persisted theme + SPA navigation on grant delete/duplicate. |
 | 2026-04-15 | B + C shipped: question reorder API + drag UI, list-order labels, reviewed blocks empty + clears needs-input. |
 | 2026-04-18 | E + F shipped: PDF/DOCX/MD export polish, **Exported** line from Settings locale, org line in export body; `exports/*` attachment downloads + `downloadFile` client pattern (`docs/BUILD_PLAN_E_F.md`). |
+| 2026-04-18 | **K**: comprehensive `FEATURES.md` at repo root (nonprofit + ops guide). |
