@@ -1,4 +1,4 @@
-# GrantFiller — Setup Guide (v2)
+# GrantFiller — Setup Guide
 
 **Local-first grant application assistant.** Upload a funder's PDF, Word file, or URL → GrantFiller extracts questions, drafts answers from your organization facts, and exports polished PDF / Word / Markdown.
 
