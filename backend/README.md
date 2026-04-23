@@ -8,4 +8,4 @@ pip install -e ".[dev]"
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Requires Ollama running with `OLLAMA_MODEL` (default `qwen2.5:7b`).
+Requires Ollama running with `OLLAMA_MODEL` (default `qwen2.5:3b-instruct`).
