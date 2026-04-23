@@ -39,7 +39,7 @@ class OllamaClient:
     def _model_not_found_message(self, detail: str | None) -> str:
         return (
             f"Ollama: {detail or 'model not found'}. "
-            f"Set OLLAMA_MODEL to an exact name from `ollama list` (e.g. qwen2.5:7b-instruct, not qwen2.5:7b unless you pulled that tag)."
+            f"Set OLLAMA_MODEL to an exact name from `ollama list` (e.g. qwen2.5:3b-instruct, not qwen2.5:3b unless you pulled that tag)."
         )
 
     async def _chat_via_generate(self, client: httpx.AsyncClient, system: str, user: str) -> str:

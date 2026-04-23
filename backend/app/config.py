@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     gemini_timeout_s: float = 120.0
     gemini_embed_timeout_s: float = 90.0
     ollama_base_url: str = "http://127.0.0.1:11434"
-    ollama_model: str = "qwen2.5:7b-instruct"
+    ollama_model: str = "qwen2.5:3b-instruct"
     ollama_timeout_s: float = 600.0
     # Embeddings for semantic deduplication when learning org facts (ollama pull nomic-embed-text)
     ollama_embed_model: str = "nomic-embed-text"
