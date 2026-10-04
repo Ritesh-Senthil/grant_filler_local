@@ -151,7 +151,8 @@ def main() -> int:
         "app_dir": str(destination), "python": str(python), "ollama": ollama,
         "install_id": old["install_id"] if old else str(uuid.uuid4()),
         "port": old["port"] if old else free_port(), "ollama_url": "http://127.0.0.1:11434",
-        "chat_model": "qwen2.5:3b-instruct", "embed_model": "nomic-embed-text",
+        "chat_model": old.get("chat_model", "qwen2.5:3b-instruct") if old else "qwen2.5:3b-instruct",
+        "embed_model": "nomic-embed-text",
     }
     atomic_json(root / "installation.json", config)
     env = runtime_env(root, config)

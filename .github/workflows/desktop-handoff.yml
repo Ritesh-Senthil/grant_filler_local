@@ -23,6 +23,8 @@ jobs:
         run: |
           $tokens = $null
           $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile("$pwd/desktop/setup-windows.ps1", [ref]$tokens, [ref]$errors) | Out-Null
-          if ($errors.Count -gt 0) { $errors | Format-List; exit 1 }
+          foreach ($script in @('setup-windows.ps1', 'upgrade-ai-windows.ps1')) {
+            [System.Management.Automation.Language.Parser]::ParseFile("$pwd/desktop/$script", [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) { $errors | Format-List; exit 1 }
+          }
       - run: python desktop/smoke_test.py --shortcuts

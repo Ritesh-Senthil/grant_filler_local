@@ -21,10 +21,12 @@ import httpx
 from launch import (api_url, atomic_json, load_config, server_ready, start_supervisor,
                     stop_supervisor)
 from setup import free_port, install_shortcuts
+import model_upgrade
 
 
 class FakeAI(BaseHTTPRequestHandler):
     fact_id = ""
+    fail_upgrade = False
     def log_message(self, *_):
         pass
 
@@ -37,7 +39,7 @@ class FakeAI(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
-        self.respond({"models": [{"name": "qwen2.5:3b-instruct"}, {"name": "nomic-embed-text:latest"}]})
+        self.respond({"models": [{"name": "qwen2.5:3b-instruct"}, {"name": "qwen2.5:7b-instruct"}, {"name": "nomic-embed-text:latest"}]})
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
@@ -45,7 +47,9 @@ class FakeAI(BaseHTTPRequestHandler):
             self.respond({"embedding": [0.1, 0.2, 0.3]})
         else:
             title = (body.get("format") or {}).get("title", "")
-            if title == "QuestionListPayload":
+            if title == "UpgradeCheck":
+                value = {"ok": not self.fail_upgrade}
+            elif title == "QuestionListPayload":
                 value = {"questions": [{"question_id": "mission", "question_text": "What is your organization's mission?", "type": "textarea", "required": True}]}
             else:
                 value = {"answers": [{"question_id": "mission", "answer_value": "We provide community essentials to families.", "needs_manual_input": False, "evidence_fact_ids": [self.fact_id]}]}
@@ -126,6 +130,25 @@ def exercise(root: Path, config: dict, *, real_ai: bool):
     start_supervisor(root, config)
     wait_for(lambda: server_ready(config))
     assert list((root / "backups").glob("*.zip")), "Startup backup was not created"
+    if not real_ai:
+        from unittest.mock import patch
+        with patch.object(model_upgrade, "download_model"):
+            FakeAI.fail_upgrade = True
+            try:
+                model_upgrade.upgrade(root, "qwen2.5:7b-instruct")
+            except RuntimeError:
+                assert load_config(root)["chat_model"] == config["chat_model"]
+                assert server_ready(config)
+            else:
+                raise AssertionError("An invalid AI test must not change the app")
+            finally:
+                FakeAI.fail_upgrade = False
+            model_upgrade.upgrade(root, "qwen2.5:7b-instruct")
+            assert load_config(root)["chat_model"] == "qwen2.5:7b-instruct"
+            model_upgrade.upgrade(root, "qwen2.5:3b-instruct")
+            assert load_config(root)["chat_model"] == config["chat_model"]
+            assert httpx.get(api_url(config) + f"/api/v1/grants/{gid}", trust_env=False).json()["answers"]
+        print("PASS: AI update, return to 3B, saved work preserved, rejected update keeps current app", flush=True)
     print("PASS: routes, local-only AI, PDF upload, question extraction, drafting, PDF/Word/Markdown exports, crash recovery, duplicate launch, restart persistence, backup", flush=True)
 
 
