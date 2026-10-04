@@ -35,7 +35,9 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 StorageDep = Annotated[StorageService, Depends(get_storage)]
 LlmDep = Annotated[LlmClient, Depends(get_llm)]
 EmbedderDep = Annotated[Embedder, Depends(get_embedder)]
-SessionDep = Annotated[AsyncSession, Depends(get_session)]
+# Finish the transaction before acknowledging a save to the browser. Otherwise a
+# follow-up request can read stale data while the previous commit is still running.
+SessionDep = Annotated[AsyncSession, Depends(get_session, scope="function")]
 
 
 async def ensure_default_org(session: AsyncSession) -> Organization:

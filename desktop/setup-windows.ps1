@@ -11,9 +11,11 @@ function Get-Python {
     }
     foreach ($name in @('python', 'python3')) {
         $command = Get-Command $name -ErrorAction SilentlyContinue
-        if ($command) {
-            & $command.Source -c "import sys; raise SystemExit(0 if sys.version_info >= (3,11) else 1)" 2>$null
-            if ($LASTEXITCODE -eq 0) { return $command.Source }
+        if ($command -and $command.Source -notlike '*\WindowsApps\*') {
+            try {
+                & $command.Source -c "import sys; raise SystemExit(0 if sys.version_info >= (3,11) else 1)" 2>$null
+                if ($LASTEXITCODE -eq 0) { return $command.Source }
+            } catch { }
         }
     }
     return $null

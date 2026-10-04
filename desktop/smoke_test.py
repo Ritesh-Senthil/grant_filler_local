@@ -66,6 +66,8 @@ def exercise(root: Path, config: dict, *, real_ai: bool):
     with httpx.Client(base_url=api_url(config), timeout=30, trust_env=False) as client:
         def post(path, **kw):
             response = client.post(path, **kw)
+            if response.is_error:
+                print(f"FAILED {path}: {response.status_code} {response.text}", flush=True)
             response.raise_for_status()
             return response.json()
         for route in ("/", "/settings", "/org", "/grants/example"):
@@ -87,6 +89,7 @@ def exercise(root: Path, config: dict, *, real_ai: bool):
         pdf = doc.tobytes()
         doc.close()
         post(f"/api/v1/grants/{gid}/files", files={"file": ("sample.pdf", pdf, "application/pdf")})
+        assert client.get(f"/api/v1/grants/{gid}").json()["source_file_key"], "Upload was acknowledged before it was saved"
         def job_done(job_id):
             row = client.get(f"/api/v1/jobs/{job_id}").json()
             if row["status"] == "failed":
