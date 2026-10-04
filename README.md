@@ -4,6 +4,8 @@
 
 [Download the tested installation kit](https://github.com/Ritesh-Senthil/grant_filler_local/releases/download/desktop-handoff-20261004/GrantFiller-Local-Handoff.zip). Extract the entire ZIP, open `desktop`, and double-click `Setup Windows.cmd` on Windows or `Setup Mac.command` on Mac. Follow the [on-site installation guide](desktop/HANDOFF.md). This creates a fresh local installation with a desktop icon and background startup; everyday use needs no terminal.
 
+Already installed on Windows? [Download the 3B/7B AI update](https://github.com/Ritesh-Senthil/grant_filler_local/releases/download/desktop-ai-update-20261004/GrantFiller-Windows-AI-Update.zip) and follow [the update guide](desktop/AI_UPDATE.md).
+
 The guide below is the developer setup. The desktop kit already includes the built interface.
 
 **Local-first grant application assistant.** Upload a funder's PDF, Word file, or URL → GrantFiller extracts questions, drafts answers from your organization facts, and exports polished PDF / Word / Markdown.

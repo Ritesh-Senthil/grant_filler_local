@@ -18,6 +18,10 @@ This kit starts with a fresh database. It includes the built interface and appli
 3. Leave the setup window open while it installs dependencies, Chromium, and both AI models. It tests actual local AI before reporting `SETUP COMPLETE`.
 4. Use the new `GrantFiller` desktop shortcut. `Repair GrantFiller` reruns setup while preserving saved work.
 
+## Optional 7B update for an already-installed Windows laptop
+
+Download the [Windows AI update ZIP](https://github.com/Ritesh-Senthil/grant_filler_local/releases/download/desktop-ai-update-20261004/GrantFiller-Windows-AI-Update.zip), extract it, and run `Upgrade AI Windows.cmd`. This preserves saved work and adds a desktop selector for 3B or 7B. See [the update instructions](AI_UPDATE.md). The larger model downloads about 4.7 GB and is tested before activation.
+
 ## Mac
 
 1. Install Python 3.12 or newer from https://www.python.org/downloads/macos/ and Ollama from https://ollama.com/download/mac if they are missing.
