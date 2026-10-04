@@ -52,4 +52,6 @@ Click GrantFiller. It opens in the normal browser, and the supporting processes 
 
 ## Verification scope
 
-On the development Mac: a fresh dependency installation and real Ollama inference passed. Full HTTP tests passed PDF upload, question extraction, drafting, all three exports, backend crash recovery, duplicate launch, restart persistence and startup backup. 152 backend tests and 31 interface tests passed. Windows native verification is tracked at https://github.com/Ritesh-Senthil/grant_filler_local/actions . The recipient's model-download time, hardware speed, permissions and login startup still require on-site checking.
+The Windows native verification passed on 2026-10-04: dependency installation, installer syntax, desktop/startup shortcut creation, PDF upload, question extraction, drafting, PDF/Word/Markdown exports, backend crash recovery, duplicate launch, restart persistence and startup backup. This Windows automated run uses a simulated AI service; setup tests actual Ollama on the recipient laptop. View the tested run: https://github.com/Ritesh-Senthil/grant_filler_local/actions/runs/37224035445 .
+
+On the development Mac, a fresh dependency installation and real Ollama inference passed, including the full drafting/export workflow. 153 backend tests and 31 interface tests passed. The recipient's model-download time, hardware speed, permissions and login startup still require on-site checking.
