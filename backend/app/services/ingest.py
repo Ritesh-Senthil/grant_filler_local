@@ -23,6 +23,14 @@ def extract_pdf_bytes(data: bytes) -> list[TextSegment]:
         for i in range(len(doc)):
             page = doc.load_page(i)
             text = page.get_text("text") or ""
+            if not text.strip():
+                try:
+                    # PyMuPDF uses Tesseract when available. This is best-effort so a
+                    # machine without OCR support still returns a clear no-text error.
+                    text_page = page.get_textpage_ocr(dpi=150, full=True)
+                    text = page.get_text("text", textpage=text_page) or ""
+                except Exception:
+                    text = ""
             if text.strip():
                 segments.append(TextSegment(label=f"page_{i+1}", text=text.strip()))
     finally:
@@ -35,10 +43,34 @@ def extract_docx_bytes(data: bytes) -> list[TextSegment]:
 
     doc = Document(BytesIO(data))
     parts: list[str] = []
-    for p in doc.paragraphs:
-        t = (p.text or "").strip()
-        if t:
-            parts.append(t)
+
+    def add_paragraphs(paragraphs) -> None:
+        for paragraph in paragraphs:
+            text = (paragraph.text or "").strip()
+            if text:
+                parts.append(text)
+
+    def add_table(table) -> None:
+        for row in table.rows:
+            cells: list[str] = []
+            for cell in row.cells:
+                cell_parts = [(p.text or "").strip() for p in cell.paragraphs]
+                cell_text = "\n".join(p for p in cell_parts if p)
+                if cell_text:
+                    cells.append(cell_text)
+                for nested in cell.tables:
+                    add_table(nested)
+            if cells:
+                parts.append(" | ".join(cells))
+
+    # python-docx exposes body paragraphs and tables separately. Reading both is more
+    # important than exact interleaving because grant forms commonly put every prompt in a table.
+    add_paragraphs(doc.paragraphs)
+    for table in doc.tables:
+        add_table(table)
+    for section in doc.sections:
+        add_paragraphs(section.header.paragraphs)
+        add_paragraphs(section.footer.paragraphs)
     full = "\n\n".join(parts)
     if not full.strip():
         return []

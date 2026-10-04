@@ -1,6 +1,5 @@
 import logging
-from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -23,6 +22,10 @@ from app.services.questions_extract import extract_questions_from_chunks
 from app.storage import StorageService
 
 logger = logging.getLogger(__name__)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 async def publish_job_progress(
@@ -106,8 +109,7 @@ async def _do_parse(
     logger.info("parse_job_start grant_id=%s job_id=%s", grant_id, job_id)
     job.status = "running"
     job.progress = 0.05
-    await session.flush()
-    await publish_job_progress(session_factory, job_id, 0.05, status="running")
+    await session.commit()
 
     grant = await session.get(Grant, grant_id)
     if not grant:
@@ -138,12 +140,14 @@ async def _do_parse(
         else:
             segments = extract_pdf_bytes(data)
         if not segments:
-            raise ValueError("No text extracted from document")
+            if st == "docx":
+                raise ValueError("No readable text was found in this Word document")
+            raise ValueError(
+                "No readable text was found in this PDF. It may be a scan; run OCR or export a text-searchable PDF and try again."
+            )
 
     chunks = segments_to_chunks(segments, settings)
-    grant.source_chunks_json = chunks
-    job.progress = 0.2
-    await session.flush()
+    # Do not hold a SQLite write transaction while waiting for model inference.
     await publish_job_progress(session_factory, job_id, 0.2)
 
     logger.info(
@@ -171,6 +175,7 @@ async def _do_parse(
     if not questions:
         raise ValueError("No valid questions extracted; try a clearer PDF/DOCX or edit questions manually later")
 
+    grant.source_chunks_json = chunks
     await session.execute(delete(Question).where(Question.grant_id == grant_id))
     await session.execute(delete(Answer).where(Answer.grant_id == grant_id))
 
@@ -189,7 +194,7 @@ async def _do_parse(
         )
 
     grant.status = "ready"
-    grant.updated_at = datetime.utcnow()
+    grant.updated_at = _utcnow()
     job.status = "completed"
     job.progress = 1.0
     job.result_json = {"question_count": len(questions)}
@@ -252,7 +257,7 @@ async def _do_generate(
     logger.info("generate_job_start grant_id=%s job_id=%s", grant_id, job_id)
     job.status = "running"
     job.progress = 0.1
-    await session.flush()
+    await session.commit()
 
     org = await ensure_default_org(session)
     r = await session.execute(select(Fact).where(Fact.org_id == org.id))
@@ -267,7 +272,7 @@ async def _do_generate(
         qs = [q for q in qs if q.question_id in wanted]
 
     job.progress = 0.3
-    await session.flush()
+    await session.commit()
 
     g = await session.get(Grant, grant_id)
     gchunks = _grant_chunks_for_retrieval(g) if g else None
@@ -279,6 +284,7 @@ async def _do_generate(
         qs,
         grant_chunks=gchunks,
         grant_chunk_cap=int(settings.grant_retrieval_chunk_cap),
+        max_concurrency=int(settings.generate_question_concurrency),
     )
 
     for q, item in zip(qs, items, strict=True):
@@ -310,10 +316,12 @@ async def _do_generate(
             ans.answer_value = val
             ans.needs_manual_input = nmi
             ans.evidence_fact_ids = normalize_evidence_fact_ids(item.evidence_fact_ids)
+            # Any AI rewrite invalidates the human review of the previous value.
+            ans.reviewed = False
 
     if g:
         g.status = "ready"
-        g.updated_at = datetime.utcnow()
+        g.updated_at = _utcnow()
 
     job.status = "completed"
     job.progress = 1.0
@@ -365,7 +373,7 @@ async def _do_learn_org(
     logger.info("learn_org_job_start grant_id=%s job_id=%s", grant_id, job_id)
     job.status = "running"
     job.progress = 0.1
-    await session.flush()
+    await session.commit()
 
     org = await ensure_default_org(session)
     r = await session.execute(select(Fact).where(Fact.org_id == org.id))
@@ -385,17 +393,17 @@ async def _do_learn_org(
     pairs: list[tuple[Question, Answer]] = []
     for q in questions:
         a = amap.get(q.question_id)
-        if a is None:
+        if a is None or not a.reviewed:
             continue
         pairs.append((q, a))
 
     job.progress = 0.35
-    await session.flush()
+    await session.commit()
 
     extracted = await extract_new_facts_from_grant(llm, all_facts, pairs)
 
     job.progress = 0.55
-    await session.flush()
+    await session.commit()
 
     threshold = float(settings.learn_org_semantic_similarity)
     semantic_on = bool(settings.learn_org_embed_enabled) and threshold > 0.0
@@ -412,12 +420,14 @@ async def _do_learn_org(
             existing_vectors = []
 
     job.progress = 0.7
-    await session.flush()
+    await session.commit()
 
     source = f"Learned from grant: {g.name}"[:512]
     added = 0
     updated = 0
     skipped_similar = 0
+    skipped_conflicts = 0
+    allowed_source_qids = {q.question_id for q, _a in pairs}
 
     for ex in extracted:
         k = (ex.key or "").strip()
@@ -446,34 +456,24 @@ async def _do_learn_org(
         if match is not None:
             old_val = (match.value or "").strip()
             if match_exact:
-                if match.value != v:
-                    match.value = v
-                    if not (match.source or "").strip():
-                        match.source = source
-                    updated += 1
+                if values_effectively_same(v, old_val):
+                    skipped_similar += 1
+                else:
+                    # Existing organization facts are human-owned. Never replace one
+                    # automatically from a model-generated proposal.
+                    skipped_conflicts += 1
                 continue
 
             # Semantic merge: do not create a new row.
             if values_effectively_same(v, old_val):
                 skipped_similar += 1
                 continue
-            if len(v) >= max(12, int(len(old_val) * 0.9)) or len(old_val) < 36:
-                match.value = v
-                if not (match.source or "").strip():
-                    match.source = source
-                updated += 1
-                if semantic_on and match in all_facts:
-                    mi = all_facts.index(match)
-                    if mi < len(existing_vectors):
-                        try:
-                            existing_vectors[mi] = await embedder.embed_text(fact_embedding_text(match.key or "", v))
-                        except Exception:
-                            pass
-            else:
-                skipped_similar += 1
+            skipped_conflicts += 1
             continue
 
         qid = (ex.source_question_id or "").strip() or None
+        if qid not in allowed_source_qids:
+            qid = None
         nf = Fact(
             org_id=org.id,
             key=k[:256],
@@ -497,6 +497,7 @@ async def _do_learn_org(
         "facts_added": added,
         "facts_updated": updated,
         "facts_skipped_similar": skipped_similar,
+        "facts_skipped_conflicts": skipped_conflicts,
         "semantic_dedupe": semantic_on,
     }
     job.error = None

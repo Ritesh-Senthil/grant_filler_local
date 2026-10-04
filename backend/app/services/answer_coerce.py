@@ -2,6 +2,7 @@
 
 import math
 import re
+from datetime import date
 from typing import Any
 
 from app.models import Question
@@ -92,6 +93,10 @@ def coerce_answer_value(question: Question, value: Any) -> Any:
             return ""
         if not _DATE_RE.match(s):
             raise ValueError("Date must be YYYY-MM-DD")
+        try:
+            date.fromisoformat(s)
+        except ValueError as exc:
+            raise ValueError("Enter a real calendar date in YYYY-MM-DD format") from exc
         return s
 
     # text, textarea, other

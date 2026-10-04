@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import (
     JSON,
@@ -21,6 +21,11 @@ class Base(DeclarativeBase):
 
 def _uuid() -> str:
     return str(uuid.uuid4())
+
+
+def _utcnow() -> datetime:
+    """Naive UTC for SQLite compatibility without deprecated datetime.utcnow()."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class Organization(Base):
@@ -50,7 +55,7 @@ class Fact(Base):
         String(64), ForeignKey("grants.id", ondelete="SET NULL"), nullable=True
     )
     learned_from_question_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     org: Mapped["Organization"] = relationship("Organization", back_populates="facts")
 
@@ -69,8 +74,8 @@ class Grant(Base):
     export_file_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     # Text chunks from last successful parse (PDF/DOCX/web); used for grant-grounded answer drafting.
     source_chunks_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     questions: Mapped[list["Question"]] = relationship(
         "Question",
@@ -123,4 +128,4 @@ class Job(Base):
     progress: Mapped[float] = mapped_column(Float, default=0.0)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)

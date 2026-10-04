@@ -4,6 +4,7 @@ export function grantStatusLabel(status: string): string {
   const labels: Record<string, string> = {
     draft: "Getting started",
     ready: "In progress",
+    source_changed: "Source changed — find questions again",
   };
   return labels[status] ?? status.replace(/_/g, " ");
 }

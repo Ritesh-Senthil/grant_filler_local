@@ -9,6 +9,7 @@ export function DashboardPage() {
   const [busy, setBusy] = useState(false);
   const [llmOk, setLlmOk] = useState<boolean | null>(null);
   const [llmProvider, setLlmProvider] = useState<string | null>(null);
+  const [missingModels, setMissingModels] = useState<string[]>([]);
 
   const load = () => {
     api
@@ -27,6 +28,7 @@ export function DashboardPage() {
       .then((c) => {
         setLlmOk(c.llm_configured);
         setLlmProvider(c.llm_provider);
+        setMissingModels(c.missing_models ?? []);
       })
       .catch(() => {
         setLlmOk(false);
@@ -87,7 +89,11 @@ export function DashboardPage() {
                   Ollama
                 </a>{" "}
                 on this computer and pull the model named in your backend config (see <code className="text-xs">OLLAMA_MODEL</code> in{" "}
-                <code className="text-xs">.env</code>). Draft answers and finding questions will not work until it is running.
+                <code className="text-xs">.env</code>).
+                {missingModels.length > 0 ? (
+                  <> Missing: <code className="text-xs">{missingModels.join(", ")}</code>.</>
+                ) : null}{" "}
+                Draft answers and finding questions will not work until the chat model is available.
               </>
             )}{" "}
             Configure the model provider in{" "}

@@ -32,11 +32,15 @@ export function SettingsPage() {
   const [savingHeader, setSavingHeader] = useState(false);
   const [llmOk, setLlmOk] = useState<boolean | null>(null);
   const [llmProvider, setLlmProvider] = useState<string | null>(null);
+  const [localOnly, setLocalOnly] = useState(false);
+  const [embeddingOk, setEmbeddingOk] = useState<boolean | null>(null);
+  const [missingModels, setMissingModels] = useState<string[]>([]);
   const [llmSource, setLlmSource] = useState<"env" | "user" | null>(null);
   const [switchingLlm, setSwitchingLlm] = useState(false);
   const [theme, setTheme] = useState<ThemePreference>(() => getDocumentTheme());
   const [enhanceText, setEnhanceText] = useState("");
   const [enhanceBusy, setEnhanceBusy] = useState(false);
+  const [enhanceSuccess, setEnhanceSuccess] = useState<string | null>(null);
   const [localeBusy, setLocaleBusy] = useState(false);
   const [bannerBusy, setBannerBusy] = useState(false);
 
@@ -55,6 +59,9 @@ export function SettingsPage() {
       const cfg = await api.config();
       setLlmOk(cfg.llm_configured);
       setLlmProvider(cfg.llm_provider);
+      setLocalOnly(cfg.local_only);
+      setEmbeddingOk(cfg.embedding_configured);
+      setMissingModels(cfg.missing_models ?? []);
       setLlmSource(cfg.llm_provider_source);
     } catch (e) {
       setError((e as Error).message);
@@ -87,6 +94,8 @@ export function SettingsPage() {
       const c = await api.setLlmProvider({ llm_provider: p });
       setLlmOk(c.llm_configured);
       setLlmProvider(c.llm_provider);
+      setEmbeddingOk(c.embedding_configured);
+      setMissingModels(c.missing_models ?? []);
       setLlmSource(c.llm_provider_source);
     } catch (e) {
       setError(humanizeApiError(e));
@@ -102,6 +111,8 @@ export function SettingsPage() {
       const c = await api.clearLlmPreference();
       setLlmOk(c.llm_configured);
       setLlmProvider(c.llm_provider);
+      setEmbeddingOk(c.embedding_configured);
+      setMissingModels(c.missing_models ?? []);
       setLlmSource(c.llm_provider_source);
     } catch (e) {
       setError(humanizeApiError(e));
@@ -157,9 +168,11 @@ export function SettingsPage() {
     if (!enhanceText.trim()) return;
     setEnhanceBusy(true);
     setError(null);
+    setEnhanceSuccess(null);
     try {
       await api.submitEnhancement(enhanceText.trim());
       setEnhanceText("");
+      setEnhanceSuccess("Thanks — your request was saved on this device.");
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -290,7 +303,9 @@ export function SettingsPage() {
 
       {sectionCard(
         "LLM / AI backend",
-        "Choose local Ollama or Google Gemini. Your choice is saved on this machine (app_preferences.json under your data folder) and overrides LLM_PROVIDER in .env until you reset.",
+        localOnly
+          ? "AI runs on this laptop. Your documents and drafts stay on this device."
+          : "Choose local Ollama or Google Gemini. Your choice is saved on this machine (app_preferences.json under your data folder) and overrides LLM_PROVIDER in .env until you reset.",
         <>
           {llmOk === false && (
             <p className="text-sm text-amber-800 dark:text-amber-200 rounded-lg bg-amber-50 dark:bg-amber-950/45 border border-amber-200/80 dark:border-amber-800/50 px-3 py-2">
@@ -302,7 +317,7 @@ export function SettingsPage() {
               )}
             </p>
           )}
-          <div className="flex flex-wrap items-center gap-2">
+          {!localOnly && <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               disabled={switchingLlm || llmProvider === "ollama"}
@@ -329,7 +344,7 @@ export function SettingsPage() {
                 Use .env default instead
               </button>
             ) : null}
-          </div>
+          </div>}
           {llmProvider && (
             <p className="text-xs text-slate-500 dark:text-slate-400">
               Active: <span className="font-medium text-slate-700 dark:text-slate-300">{llmProvider}</span>
@@ -337,12 +352,17 @@ export function SettingsPage() {
               {switchingLlm ? " · applying…" : null}
             </p>
           )}
+          {llmProvider === "ollama" && llmOk && embeddingOk === false ? (
+            <p className="text-xs text-amber-700 dark:text-amber-300">
+              Optional embedding model missing: {missingModels.join(", ")}. Drafting will use a slower lexical fallback.
+            </p>
+          ) : null}
         </>
       )}
 
       {sectionCard(
         "Locale",
-        "Stub for future date and format preferences (exports and in-app dates). Values are saved to app_preferences.json.",
+        "Choose the date format used in exported documents. The preference is saved locally.",
         <div className="flex flex-wrap items-center gap-2">
           <label htmlFor="locale-select" className="text-sm text-slate-700 dark:text-slate-300">
             Locale
@@ -354,9 +374,9 @@ export function SettingsPage() {
             onChange={(e) => void onLocaleChange(e.target.value)}
             className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm"
           >
-            <option value="iso">ISO-style (stub default)</option>
-            <option value="en-US">en-US (stub)</option>
-            <option value="en-GB">en-GB (stub)</option>
+            <option value="iso">ISO (2026-09-20)</option>
+            <option value="en-US">US (September 20, 2026)</option>
+            <option value="en-GB">UK (20 September 2026)</option>
           </select>
         </div>
       )}
@@ -379,7 +399,10 @@ export function SettingsPage() {
           <textarea
             className="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 min-h-[100px] text-slate-900 dark:text-white"
             value={enhanceText}
-            onChange={(e) => setEnhanceText(e.target.value)}
+            onChange={(e) => {
+              setEnhanceText(e.target.value);
+              setEnhanceSuccess(null);
+            }}
             placeholder="What would make GrantFiller more useful for you?"
           />
           <button
@@ -389,6 +412,11 @@ export function SettingsPage() {
           >
             Submit
           </button>
+          {enhanceSuccess ? (
+            <p className="text-sm text-emerald-700 dark:text-emerald-300" role="status">
+              {enhanceSuccess}
+            </p>
+          ) : null}
         </form>
       )}
 

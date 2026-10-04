@@ -35,9 +35,7 @@ def runner_ctx(test_client, mock_ollama_questions):
 
 
 async def _create_parse_job(sf, grant_id: str) -> str:
-    from sqlalchemy.ext.asyncio import AsyncSession
-
-    async with sf() as session:  # type: AsyncSession
+    async with sf() as session:
         j = Job(grant_id=grant_id, job_kind="parse", status="pending")
         session.add(j)
         await session.commit()
@@ -206,7 +204,7 @@ def test_run_parse_job_fails_no_extractable_text(runner_ctx, mock_ollama_questio
         async with sf() as session:
             j = await session.get(Job, jid)
             assert j.status == "failed"
-            assert "No text extracted" in (j.error or "")
+            assert "No readable text" in (j.error or "")
 
     asyncio.run(check())
 

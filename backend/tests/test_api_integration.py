@@ -131,8 +131,6 @@ def test_generate_enqueue_returns_202(test_client, monkeypatch):
     """Enqueue generate only when questions exist (inserted directly for this contract test)."""
     import asyncio
 
-    from sqlalchemy import select
-
     from app.models import Question
 
     r = test_client.post("/api/v1/grants", json={"name": "G2", "source_type": "pdf"})
@@ -199,6 +197,105 @@ def test_patch_answer_creates_row(test_client):
     assert pa.json()["answer_value"] == "Manual answer"
     assert pa.json()["reviewed"] is True
     assert pa.json()["needs_manual_input"] is False
+
+
+def test_editing_answer_clears_review_and_evidence(test_client):
+    import asyncio
+
+    from app.models import Answer, Question
+
+    grant_id = test_client.post(
+        "/api/v1/grants", json={"name": "Review", "source_type": "pdf"}
+    ).json()["id"]
+    session_factory = test_client.app.state.session_factory
+
+    async def seed():
+        async with session_factory() as session:
+            session.add(
+                Question(
+                    grant_id=grant_id,
+                    question_id="q1",
+                    question_text="Mission?",
+                    q_type="textarea",
+                )
+            )
+            session.add(
+                Answer(
+                    grant_id=grant_id,
+                    question_id="q1",
+                    answer_value="Old",
+                    reviewed=True,
+                    evidence_fact_ids=["fact-1"],
+                )
+            )
+            await session.commit()
+
+    asyncio.run(seed())
+    response = test_client.patch(
+        f"/api/v1/grants/{grant_id}/questions/q1",
+        json={"answer_value": "New"},
+    )
+    assert response.status_code == 200
+    assert response.json()["reviewed"] is False
+    assert response.json()["evidence_fact_ids"] == []
+
+
+def test_workspace_save_is_atomic_and_invalidates_review(test_client):
+    import asyncio
+
+    from app.models import Answer, Question
+
+    grant_id = test_client.post(
+        "/api/v1/grants", json={"name": "Original", "source_type": "pdf"}
+    ).json()["id"]
+    session_factory = test_client.app.state.session_factory
+
+    async def seed():
+        async with session_factory() as session:
+            session.add(Question(grant_id=grant_id, question_id="q1", question_text="One?", q_type="textarea"))
+            session.add(Answer(grant_id=grant_id, question_id="q1", answer_value="Old", reviewed=True))
+            await session.commit()
+
+    asyncio.run(seed())
+    response = test_client.put(
+        f"/api/v1/grants/{grant_id}/workspace",
+        json={
+            "name": "Updated",
+            "answers": [{"question_id": "q1", "answer_value": "New"}],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["name"] == "Updated"
+    answer = response.json()["answers"][0]
+    assert answer["answer_value"] == "New"
+    assert answer["reviewed"] is False
+
+
+def test_workspace_save_rolls_back_all_changes_on_invalid_answer(test_client):
+    import asyncio
+
+    from app.models import Question
+
+    grant_id = test_client.post(
+        "/api/v1/grants", json={"name": "Original", "source_type": "pdf"}
+    ).json()["id"]
+    session_factory = test_client.app.state.session_factory
+
+    async def seed():
+        async with session_factory() as session:
+            session.add(Question(grant_id=grant_id, question_id="q1", question_text="Amount?", q_type="number"))
+            await session.commit()
+
+    asyncio.run(seed())
+    response = test_client.put(
+        f"/api/v1/grants/{grant_id}/workspace",
+        json={
+            "name": "Should not persist",
+            "answers": [{"question_id": "q1", "answer_value": "not a number"}],
+        },
+    )
+    assert response.status_code == 422
+    assert test_client.get(f"/api/v1/grants/{grant_id}").json()["name"] == "Original"
 
 
 def test_mark_reviewed_empty_returns_422(test_client):
@@ -329,6 +426,53 @@ def test_learn_org_without_questions_returns_400(test_client):
     assert r2.status_code == 400
 
 
+def test_uploading_replacement_marks_existing_workspace_stale(test_client):
+    import asyncio
+
+    from app.models import Question
+
+    grant_id = test_client.post(
+        "/api/v1/grants", json={"name": "G", "source_type": "pdf"}
+    ).json()["id"]
+    session_factory = test_client.app.state.session_factory
+
+    async def seed():
+        async with session_factory() as session:
+            session.add(Question(grant_id=grant_id, question_id="q1", question_text="Old?", q_type="textarea"))
+            await session.commit()
+
+    asyncio.run(seed())
+    upload = test_client.post(
+        f"/api/v1/grants/{grant_id}/files",
+        files={"file": ("new.pdf", _minimal_pdf_bytes(), "application/pdf")},
+    )
+    assert upload.status_code == 200
+    assert test_client.get(f"/api/v1/grants/{grant_id}").json()["status"] == "source_changed"
+    blocked = test_client.post(f"/api/v1/grants/{grant_id}/generate", json={})
+    assert blocked.status_code == 409
+
+
+def test_active_job_blocks_second_mutating_job(test_client):
+    import asyncio
+
+    from app.models import Job, Question
+
+    grant_id = test_client.post(
+        "/api/v1/grants", json={"name": "G", "source_type": "pdf"}
+    ).json()["id"]
+    session_factory = test_client.app.state.session_factory
+
+    async def seed():
+        async with session_factory() as session:
+            session.add(Question(grant_id=grant_id, question_id="q1", question_text="One?", q_type="textarea"))
+            session.add(Job(grant_id=grant_id, job_kind="parse", status="running"))
+            await session.commit()
+
+    asyncio.run(seed())
+    response = test_client.post(f"/api/v1/grants/{grant_id}/generate", json={})
+    assert response.status_code == 409
+
+
 def test_export_markdown_without_questions(test_client):
     r = test_client.post("/api/v1/grants", json={"name": "G", "source_type": "pdf"})
     gid = r.json()["id"]
@@ -404,13 +548,14 @@ def test_ollama_chat_json_repair_on_bad_json(monkeypatch):
 
     calls = {"n": 0}
 
-    async def fake_chat(self, system, user):
+    async def fake_chat(self, system, user, response_format=None):
+        assert response_format is not None
         calls["n"] += 1
         if calls["n"] == 1:
             return "not json"
         return '{"x": 1}'
 
-    monkeypatch.setattr(OllamaClient, "chat", fake_chat)
+    monkeypatch.setattr(OllamaClient, "_chat", fake_chat)
     import asyncio
 
     from app.config import Settings

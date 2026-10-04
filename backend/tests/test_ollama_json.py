@@ -1,9 +1,13 @@
 from types import SimpleNamespace
 
 import json
+import asyncio
+
+from pydantic import BaseModel
 
 from app.services.answers import AnswerBatchPayload, normalize_answer_flags
 from app.services.json_llm import extract_json
+from app.services.json_llm import chat_json_with_repair
 
 
 def test_extract_json_plain():
@@ -50,3 +54,22 @@ def test_extract_json_strips_extra_trailing_brace():
 def test_extract_json_prefix_prose():
     raw = 'Here you go: {"answers":[]}'
     assert json.loads(extract_json(raw)) == {"answers": []}
+
+
+def test_json_repair_repeats_schema_and_invalid_response():
+    class Payload(BaseModel):
+        questions: list[str]
+
+    calls: list[tuple[str, str]] = []
+
+    async def chat(system: str, user: str) -> str:
+        calls.append((system, user))
+        if len(calls) == 1:
+            return '{"page_1":{"question_1":"Name?"}}'
+        return '{"questions":["Name?"]}'
+
+    result = asyncio.run(chat_json_with_repair(chat, "Original schema instructions", "Document", Payload))
+    assert result.questions == ["Name?"]
+    assert "Original schema instructions" in calls[1][0]
+    assert "Required JSON Schema" in calls[1][0]
+    assert "page_1" in calls[1][1]

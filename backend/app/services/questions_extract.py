@@ -36,7 +36,11 @@ Return JSON only matching this schema:
 {"questions":[{"question_id":"","question_text":"","type":"textarea|text|single_choice|multi_choice|yes_no|number|date|other","options":[],"required":false,"char_limit":null}]}
 Rules:
 - question_text is the full question as written.
+- Do not include a leading question number or letter in question_text; the application numbers questions from their saved order.
+- Extract EVERY numbered or lettered prompt that expects a response, including certifications and attestations.
 - For choice types, fill options with exact choice strings if present; else empty array.
+- A prompt with exactly Yes / No choices is type yes_no, not multi_choice.
+- A free-text or "other" response is type textarea unless it clearly requests a short answer.
 - If no clear questions exist in this chunk, return {"questions":[]}.
 - Do not invent questions not supported by the text.
 """
@@ -46,18 +50,46 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip().lower())
 
 
+_LEADING_QUESTION_NUMBER = re.compile(
+    r"^\s*(?:question\s+)?(?:\d+(?:\.\d+)*[a-z]?|[a-z])\s*[.):-]\s+",
+    re.IGNORECASE,
+)
+
+
+def _normalize_question(q: ExtractedQuestion) -> ExtractedQuestion:
+    q.question_text = _LEADING_QUESTION_NUMBER.sub("", q.question_text or "").strip()
+    q.options = [re.sub(r"^\s*[-•]\s*", "", option).strip() for option in q.options if option.strip()]
+    normalized_options = {_norm(option) for option in q.options}
+    if q.type in ("single_choice", "multi_choice") and normalized_options == {"yes", "no"}:
+        q.type = "yes_no"
+        q.options = []
+    elif q.type == "yes_no":
+        q.options = []
+    lowered = q.question_text.lower()
+    if q.options and any(phrase in lowered for phrase in ("select one", "choose one", "pick one")):
+        q.type = "single_choice"
+    elif q.options and any(phrase in lowered for phrase in ("select all", "choose all", "pick any")):
+        q.type = "multi_choice"
+    return q
+
+
 def _dedupe(questions: list[ExtractedQuestion]) -> list[ExtractedQuestion]:
     seen: set[str] = set()
+    used_ids: set[str] = set()
     out: list[ExtractedQuestion] = []
     for q in questions:
+        q = _normalize_question(q)
         key = _norm(q.question_text)
         if not key or key in seen:
             continue
         seen.add(key)
-        if not q.question_id:
+        if not q.question_id or q.question_id in used_ids:
             q.question_id = f"q_{uuid.uuid4().hex[:12]}"
         if q.type in ("single_choice", "multi_choice") and not q.options:
-            continue
+            # Keeping the prompt is safer than silently losing it. The user can answer it
+            # as text and correct its type/options in the workspace.
+            q.type = "textarea"
+        used_ids.add(q.question_id)
         out.append(q)
     return out
 
@@ -68,7 +100,7 @@ def _validate_nonempty(questions: list[ExtractedQuestion]) -> list[ExtractedQues
         if not (q.question_text or "").strip():
             continue
         if q.type in ("single_choice", "multi_choice") and not q.options:
-            continue
+            q.type = "textarea"
         out.append(q)
     return out
 

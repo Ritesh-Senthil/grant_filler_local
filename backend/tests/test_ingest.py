@@ -41,6 +41,18 @@ def test_extract_docx_roundtrip():
     assert "budget" in segs[0].text.lower()
 
 
+def test_extract_docx_table_only():
+    buf = BytesIO()
+    document = Document()
+    table = document.add_table(rows=1, cols=2)
+    table.cell(0, 0).text = "Question"
+    table.cell(0, 1).text = "Describe your mission."
+    document.save(buf)
+    segments = extract_docx_bytes(buf.getvalue())
+    assert len(segments) == 1
+    assert "describe your mission" in segments[0].text.lower()
+
+
 def test_segments_to_chunks_single():
     from app.services.ingest import TextSegment
 

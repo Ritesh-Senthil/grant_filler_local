@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import json
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
@@ -63,13 +64,19 @@ async def chat_json_with_repair(
     text = extract_json(raw)
     try:
         return response_model.model_validate_json(text)
-    except Exception:
+    except Exception as exc:
+        schema = json.dumps(response_model.model_json_schema(), separators=(",", ":"))
         repair_user = (
             user
-            + "\n\nYour previous reply was not valid JSON. Reply with ONLY a single JSON value, no markdown."
+            + "\n\nThe previous response did not match the required structure."
+            + f"\nPrevious response:\n{raw}"
+            + f"\nValidation error:\n{exc}"
+            + "\nReturn a corrected response that matches the schema exactly."
         )
         raw2 = await chat(
-            "You output only valid JSON. No prose, no markdown fences.",
+            system
+            + "\nYou are repairing an invalid response. Output only one JSON value with no prose or markdown."
+            + f"\nRequired JSON Schema: {schema}",
             repair_user,
         )
         text2 = extract_json(raw2)

@@ -1,6 +1,6 @@
 from collections.abc import AsyncGenerator
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import Settings
@@ -39,6 +39,16 @@ def init_engine(settings: Settings):
             echo=False,
             connect_args={"check_same_thread": False},
         )
+
+        @event.listens_for(_engine.sync_engine, "connect")
+        def _configure_sqlite(dbapi_connection, _connection_record) -> None:
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.execute("PRAGMA busy_timeout=15000")
+                cursor.execute("PRAGMA journal_mode=WAL")
+            finally:
+                cursor.close()
     else:
         _engine = create_async_engine(url, echo=False)
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False, class_=AsyncSession)

@@ -226,7 +226,8 @@ async def _curl_download_bytes(url: str, max_bytes: int, headers: dict[str, str]
         proc = await asyncio.create_subprocess_exec(
             "curl",
             "-sS",
-            "-L",
+            "--max-redirs",
+            "0",
             "--max-filesize",
             str(max_bytes),
             "-H",
@@ -253,6 +254,11 @@ async def _curl_download_bytes(url: str, max_bytes: int, headers: dict[str, str]
             raise WebFetchError("RESPONSE_TOO_LARGE", f"Response exceeds {max_bytes} bytes")
         if status >= 400:
             raise WebFetchError("HTTP_ERROR", f"HTTP {status}")
+        if 300 <= status < 400:
+            raise WebFetchError(
+                "REDIRECT_UNAVAILABLE",
+                "The system TLS fallback cannot safely follow redirects. Use the final HTTPS URL directly.",
+            )
         return body, final_url, status
     finally:
         try:
@@ -288,7 +294,20 @@ async def _download_bytes(
             verify=verify,
         ) as client:
             try:
-                r = await client.get(url, follow_redirects=True)
+                current_url = url
+                r = None
+                for _hop in range(6):
+                    assert_safe_url(current_url, settings)
+                    r = await client.get(current_url, follow_redirects=False)
+                    if r.status_code not in (301, 302, 303, 307, 308):
+                        break
+                    location = r.headers.get("location")
+                    if not location:
+                        raise WebFetchError("HTTP_ERROR", "Redirect response had no destination")
+                    current_url = urljoin(str(r.url), location)
+                else:
+                    raise WebFetchError("TOO_MANY_REDIRECTS", "Too many redirects")
+                assert r is not None
             except httpx.TimeoutException as e:
                 raise WebFetchError("TIMEOUT", "Request timed out") from e
             except httpx.RequestError as e:
@@ -344,6 +363,18 @@ async def _fetch_rendered_html_playwright(url: str, settings: Settings) -> tuple
                     extra_http_headers={_NGROK_SKIP_WARNING: "true"},
                     ignore_https_errors=not settings.web_fetch_ssl_verify,
                 )
+
+                async def guard_navigation(route) -> None:
+                    request = route.request
+                    if request.is_navigation_request():
+                        try:
+                            assert_safe_url(request.url, settings)
+                        except WebFetchError:
+                            await route.abort("blockedbyclient")
+                            return
+                    await route.continue_()
+
+                await context.route("**/*", guard_navigation)
                 page = await context.new_page()
                 page.set_default_navigation_timeout(timeout_ms)
                 await page.goto(url, wait_until="load", timeout=timeout_ms)

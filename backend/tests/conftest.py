@@ -13,7 +13,6 @@ from sqlalchemy import delete, select
 from starlette.testclient import TestClient
 
 from app.database import get_session_factory, reset_engine
-from app.deps import ensure_default_org
 from app.models import Answer, Fact, Grant, Job, Organization, Question
 
 
@@ -90,4 +89,3 @@ def mock_ollama_questions(monkeypatch: pytest.MonkeyPatch):
     m = AsyncMock(return_value=payload)
     monkeypatch.setattr(OllamaClient, "chat_json", m)
     return m
-

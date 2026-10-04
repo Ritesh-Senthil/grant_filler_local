@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     database_url: str | None = None  # if unset, uses data_dir/grantfiller.db
     # llm_provider: ollama (local) or gemini (Google AI Studio API key)
     llm_provider: Literal["ollama", "gemini"] = "ollama"
+    # Desktop installations can enforce local inference regardless of saved preferences.
+    local_only: bool = False
     google_api_key: str | None = None
     # Stable IDs — see https://ai.google.dev/gemini-api/docs/models (2.0 Flash is deprecated for new users)
     gemini_chat_model: str = "gemini-2.5-flash"
@@ -41,6 +43,9 @@ class Settings(BaseSettings):
     # Max grant text chunks merged into answer drafting retrieval (embedding cost / context).
     grant_retrieval_chunk_cap: int = 96
     cors_origins: str = "http://127.0.0.1:5173,http://localhost:5173"
+    # The repository has no account system. Refuse non-loopback clients unless an
+    # operator deliberately enables remote access behind external authentication.
+    allow_remote_access: bool = False
 
     @field_validator("grant_retrieval_chunk_cap", mode="before")
     @classmethod
@@ -60,6 +65,8 @@ class Settings(BaseSettings):
     chunk_max_chars: int = 32000
     chunk_overlap: int = 400
     parse_chunk_concurrency: int = 3
+    # Draft multiple questions concurrently, bounded to avoid exhausting local RAM.
+    generate_question_concurrency: int = 2
     # Web import (HTTPS fetch for parse-from-URL)
     web_fetch_timeout_s: float = 45.0
     web_fetch_max_bytes: int = 8_000_000
@@ -83,3 +90,11 @@ class Settings(BaseSettings):
     grantfiller_dev_sponsor_text: str = ""
     grantfiller_dev_sponsor_url: str = ""
 
+    @field_validator("data_dir", mode="after")
+    @classmethod
+    def _resolve_data_dir(cls, value: Path) -> Path:
+        """Keep DATA_DIR stable even when uvicorn starts from a different working directory."""
+        path = value.expanduser()
+        if not path.is_absolute():
+            path = _BACKEND_ROOT / path
+        return path.resolve()

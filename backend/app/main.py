@@ -1,5 +1,7 @@
 import json
 import logging
+import io
+import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
@@ -40,12 +42,14 @@ from app.schemas import (
     GrantRead,
     GrantSummary,
     GrantUpdate,
+    GrantWorkspaceUpdate,
     JobRead,
     OrganizationRead,
     OrganizationUpdate,
     ParseRequest,
     PreviewUrlRequest,
     QuestionRead,
+    QuestionPatch,
     QuestionReorderRequest,
     UserPreferencesPatch,
     UserPreferencesRead,
@@ -55,7 +59,7 @@ from app.services.evidence_ids import normalize_evidence_fact_ids
 from app.services.answers import answer_value_is_effectively_empty
 from app.services.export import ExportContext, build_qa_docx, build_qa_markdown, build_qa_pdf
 from app.services.export_datetime import format_export_timestamp
-from app.services.learn_org_facts import has_any_nonempty_answer
+from app.services.learn_org_facts import has_any_reviewed_answer
 from app.services.web_fetch import WebFetchError, preview_web_fetch
 from app.preferences import (
     clear_llm_provider_override,
@@ -72,6 +76,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = Settings()
@@ -79,12 +87,25 @@ async def lifespan(app: FastAPI):
     await create_tables()
     sf = get_session_factory()
     async with sf() as session:
+        # In-process background tasks cannot survive a restart. Make abandoned work
+        # explicit instead of leaving a permanent "pending" or "running" job.
+        await session.execute(
+            update(Job)
+            .where(Job.status.in_(("pending", "running")))
+            .values(
+                status="failed",
+                progress=1.0,
+                error="The application restarted before this job completed. Please run it again.",
+            )
+        )
         await ensure_default_org(session)
         await session.commit()
     app.state.settings = settings
     app.state.storage = StorageService(settings)
     override = load_llm_provider_override(settings.data_dir)
-    if override is not None:
+    if settings.local_only:
+        app.state.effective_llm_provider = "ollama"
+    elif override is not None:
         app.state.effective_llm_provider = override
     else:
         app.state.effective_llm_provider = settings.llm_provider
@@ -103,6 +124,31 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="GrantFiller API", version="0.1.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def enforce_local_access(request: Request, call_next):
+    settings = getattr(request.app.state, "settings", None) or Settings()
+    client_host = request.client.host if request.client else ""
+    if not settings.allow_remote_access and client_host not in {
+        "127.0.0.1",
+        "::1",
+        "localhost",
+        "testclient",
+    }:
+        return Response(
+            content=json.dumps(
+                {
+                    "detail": (
+                        "Remote access is disabled because GrantFiller has no built-in login. "
+                        "Use localhost, or place it behind authenticated access and set ALLOW_REMOTE_ACCESS=true."
+                    )
+                }
+            ),
+            status_code=403,
+            media_type="application/json",
+        )
+    return await call_next(request)
 
 
 def _cors_origins(settings: Settings) -> list[str]:
@@ -229,15 +275,38 @@ async def health():
     return {"ok": True}
 
 
+def _ollama_model_available(configured: str, installed: set[str]) -> bool:
+    """Ollama treats an omitted tag as ``:latest`` in requests and listings."""
+    name = configured.strip()
+    if not name:
+        return False
+    return name in installed or (":" not in name and f"{name}:latest" in installed)
+
+
 async def _config_read(settings: Settings) -> ConfigRead:
     ok = False
+    embedding_ok = False
+    missing_models: list[str] = []
     if settings.llm_provider == "gemini":
         ok = bool(settings.google_api_key and settings.google_api_key.strip())
+        embedding_ok = ok
     else:
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
                 r = await client.get(f"{settings.ollama_base_url.rstrip('/')}/api/tags")
-                ok = r.status_code == 200
+                if r.status_code == 200:
+                    payload = r.json()
+                    names = {
+                        str(m.get("name") or m.get("model") or "")
+                        for m in payload.get("models", [])
+                        if isinstance(m, dict)
+                    }
+                    ok = _ollama_model_available(settings.ollama_model, names)
+                    embedding_ok = _ollama_model_available(settings.ollama_embed_model, names)
+                    if not ok:
+                        missing_models.append(settings.ollama_model)
+                    if not embedding_ok:
+                        missing_models.append(settings.ollama_embed_model)
         except Exception:
             ok = False
     chat_model = settings.gemini_chat_model if settings.llm_provider == "gemini" else settings.ollama_model
@@ -245,8 +314,11 @@ async def _config_read(settings: Settings) -> ConfigRead:
     src: Literal["env", "user"] = "user" if user_llm_override_exists(settings.data_dir) else "env"
     return ConfigRead(
         llm_provider=settings.llm_provider,
+        local_only=settings.local_only,
         llm_provider_source=src,
         llm_configured=ok,
+        embedding_configured=embedding_ok,
+        missing_models=missing_models,
         chat_model=chat_model,
         embed_model=embed_model,
         data_dir=str(settings.data_dir.resolve()),
@@ -262,6 +334,8 @@ async def config(settings: SettingsDep):
 async def patch_llm_preference(body: LlmPreferenceUpdate, request: Request):
     """Switch between Ollama (local) and Gemini (API key). Persists under DATA_DIR/app_preferences.json."""
     base: Settings = request.app.state.settings
+    if base.local_only and body.llm_provider != "ollama":
+        raise HTTPException(422, "This installation uses local AI only.")
     save_llm_provider_override(base.data_dir, body.llm_provider)
     request.app.state.effective_llm_provider = body.llm_provider
     eff = base.model_copy(update={"llm_provider": body.llm_provider})
@@ -277,8 +351,9 @@ async def delete_llm_preference(request: Request):
     """Clear saved provider; use LLM_PROVIDER from .env again."""
     base: Settings = request.app.state.settings
     clear_llm_provider_override(base.data_dir)
-    request.app.state.effective_llm_provider = base.llm_provider
-    eff = base
+    provider = "ollama" if base.local_only else base.llm_provider
+    request.app.state.effective_llm_provider = provider
+    eff = base.model_copy(update={"llm_provider": provider})
     try:
         request.app.state.llm, request.app.state.embedder = build_llm_and_embedder(eff)
     except ValueError as e:
@@ -305,6 +380,18 @@ def _banner_ext_from_upload(content_type: str | None, filename: str | None) -> s
         if n.endswith(suf):
             return ext
     raise HTTPException(415, "Upload a JPEG, PNG, WebP, or GIF image")
+
+
+def _banner_bytes_match_extension(data: bytes, extension: str) -> bool:
+    if extension == "jpg":
+        return data.startswith(b"\xff\xd8\xff")
+    if extension == "png":
+        return data.startswith(b"\x89PNG\r\n\x1a\n")
+    if extension == "gif":
+        return data.startswith((b"GIF87a", b"GIF89a"))
+    if extension == "webp":
+        return len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP"
+    return False
 
 
 def _org_model_to_read(org: Organization) -> OrganizationRead:
@@ -353,6 +440,8 @@ async def upload_org_banner(
     if len(data) > max_b:
         raise HTTPException(413, f"Image too large (max {settings.max_upload_mb} MB)")
     ext = _banner_ext_from_upload(file.content_type, file.filename)
+    if not _banner_bytes_match_extension(data, ext):
+        raise HTTPException(415, "The uploaded file content does not match its image type")
     try:
         key = StorageService.org_banner_key(org.id, ext)
     except ValueError as e:
@@ -502,6 +591,11 @@ async def duplicate_grant(
     src = await session.get(Grant, grant_id)
     if not src:
         raise HTTPException(404, "Grant not found")
+    active_result = await session.execute(
+        select(Job).where(Job.grant_id == grant_id, Job.status.in_(("pending", "running")))
+    )
+    if active_result.scalars().first() is not None:
+        raise HTTPException(409, "Wait for the active job to finish before duplicating this grant.")
     name = (body.name or "").strip() or f"{src.name} (copy)"
     g = Grant(
         name=name,
@@ -559,6 +653,21 @@ async def duplicate_grant(
     return _grant_read(g)
 
 
+async def _assert_no_active_job(session, grant_id: str) -> None:
+    result = await session.execute(
+        select(Job).where(
+            Job.grant_id == grant_id,
+            Job.status.in_(("pending", "running")),
+        )
+    )
+    active = result.scalars().first()
+    if active is not None:
+        raise HTTPException(
+            409,
+            f"A {active.job_kind.replace('_', ' ')} job is already running for this grant. Wait for it to finish or restart the application if it is stale.",
+        )
+
+
 @app.get("/api/v1/grants/{grant_id}", response_model=GrantRead)
 async def get_grant(grant_id: str, session: SessionDep):
     g = await session.get(Grant, grant_id)
@@ -573,6 +682,7 @@ async def update_grant(grant_id: str, body: GrantUpdate, session: SessionDep):
     g = await session.get(Grant, grant_id)
     if not g:
         raise HTTPException(404, "Grant not found")
+    await _assert_no_active_job(session, grant_id)
     if body.name is not None:
         g.name = body.name
     if body.grant_url is not None:
@@ -581,7 +691,57 @@ async def update_grant(grant_id: str, body: GrantUpdate, session: SessionDep):
         g.portal_url = body.portal_url
     if body.status is not None:
         g.status = body.status
-    g.updated_at = datetime.utcnow()
+    g.updated_at = _utcnow()
+    await session.flush()
+    await session.refresh(g, ["questions", "answers"])
+    return _grant_read(g)
+
+
+@app.put("/api/v1/grants/{grant_id}/workspace", response_model=GrantRead)
+async def update_grant_workspace(
+    grant_id: str,
+    body: GrantWorkspaceUpdate,
+    session: SessionDep,
+):
+    """Atomically save grant metadata and all edited answer values."""
+    g = await session.get(Grant, grant_id)
+    if not g:
+        raise HTTPException(404, "Grant not found")
+    await _assert_no_active_job(session, grant_id)
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(422, "Grant name cannot be empty")
+        g.name = name
+    if body.grant_url is not None:
+        g.grant_url = body.grant_url
+    if body.portal_url is not None:
+        g.portal_url = body.portal_url
+
+    qresult = await session.execute(select(Question).where(Question.grant_id == grant_id))
+    questions = {q.question_id: q for q in qresult.scalars().all()}
+    if len({item.question_id for item in body.answers}) != len(body.answers):
+        raise HTTPException(422, "Duplicate question_id in answer updates")
+    aresult = await session.execute(select(Answer).where(Answer.grant_id == grant_id))
+    answers = {a.question_id: a for a in aresult.scalars().all()}
+    for item in body.answers:
+        question = questions.get(item.question_id)
+        if question is None:
+            raise HTTPException(422, f"Unknown question_id: {item.question_id}")
+        try:
+            value = coerce_answer_value(question, item.answer_value)
+        except ValueError as exc:
+            raise HTTPException(422, f"{question.question_text}: {exc}") from exc
+        answer = answers.get(item.question_id)
+        if answer is None:
+            answer = Answer(grant_id=grant_id, question_id=item.question_id)
+            session.add(answer)
+            answers[item.question_id] = answer
+        answer.answer_value = value
+        answer.reviewed = False
+        answer.needs_manual_input = answer_value_is_effectively_empty(value, question.q_type)
+        answer.evidence_fact_ids = []
+    g.updated_at = _utcnow()
     await session.flush()
     await session.refresh(g, ["questions", "answers"])
     return _grant_read(g)
@@ -592,13 +752,12 @@ async def delete_grant(grant_id: str, session: SessionDep, storage: StorageDep):
     g = await session.get(Grant, grant_id)
     if not g:
         raise HTTPException(404, "Grant not found")
+    await _assert_no_active_job(session, grant_id)
     await session.execute(
         update(Fact).where(Fact.learned_from_grant_id == grant_id).values(learned_from_grant_id=None)
     )
-    if g.source_file_key:
-        storage.delete(g.source_file_key)
-    if g.export_file_key:
-        storage.delete(g.export_file_key)
+    storage.delete_prefix(f"grants/{grant_id}")
+    storage.delete_exports(grant_id)
     await session.execute(delete(Job).where(Job.grant_id == grant_id))
     await session.delete(g)
     return {"ok": True}
@@ -615,23 +774,46 @@ async def upload_file(
     g = await session.get(Grant, grant_id)
     if not g:
         raise HTTPException(404, "Grant not found")
+    await _assert_no_active_job(session, grant_id)
     data = await file.read()
+    if not data:
+        raise HTTPException(400, "The uploaded file is empty")
     max_b = settings.max_upload_mb * 1024 * 1024
     if len(data) > max_b:
         raise HTTPException(413, f"File too large (max {settings.max_upload_mb} MB)")
     name = file.filename or "upload.bin"
+    low = name.lower()
+    if not (low.endswith(".pdf") or low.endswith(".docx")):
+        raise HTTPException(415, "Upload a PDF or Word (.docx) file")
+    if low.endswith(".pdf") and not data.startswith(b"%PDF"):
+        raise HTTPException(415, "This file has a .pdf name but is not a valid PDF")
+    if low.endswith(".docx"):
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                if "[Content_Types].xml" not in archive.namelist() or "word/document.xml" not in archive.namelist():
+                    raise HTTPException(415, "This file is not a valid Word document")
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(415, "This file is not a valid Word document") from exc
     key = StorageService.grant_source_key(grant_id, name)
+    old_key = g.source_file_key
     storage.write_bytes(key, data)
     g.source_file_key = key
     g.file_name = name
     g.source_chunks_json = None
-    low = name.lower()
     if low.endswith(".docx"):
         g.source_type = "docx"
     elif low.endswith(".pdf"):
         g.source_type = "pdf"
-    g.updated_at = datetime.utcnow()
+    existing_questions = await session.execute(
+        select(Question.id).where(Question.grant_id == grant_id).limit(1)
+    )
+    g.status = "source_changed" if existing_questions.scalar_one_or_none() is not None else "draft"
+    g.export_file_key = None
+    storage.delete_exports(grant_id)
+    g.updated_at = _utcnow()
     await session.flush()
+    if old_key and old_key != key:
+        storage.delete(old_key)
     return {"file_key": key, "file_name": name, "mime_type": file.content_type or "application/octet-stream"}
 
 
@@ -648,6 +830,7 @@ async def parse_grant(
     g = await session.get(Grant, grant_id)
     if not g:
         raise HTTPException(404, "Grant not found")
+    await _assert_no_active_job(session, grant_id)
     file_key: str | None
     parse_from_web = body.use_url
     override = (body.url or "").strip() or None
@@ -696,6 +879,7 @@ async def preview_grant_url(
     g = await session.get(Grant, grant_id)
     if not g:
         raise HTTPException(404, "Grant not found")
+    await _assert_no_active_job(session, grant_id)
     url = (body.url or "").strip() or _grant_web_url(g)
     if not url:
         raise HTTPException(400, "Set url or grant / portal application link first")
@@ -718,9 +902,20 @@ async def generate_grant(
     g = await session.get(Grant, grant_id)
     if not g:
         raise HTTPException(404, "Grant not found")
+    await _assert_no_active_job(session, grant_id)
+    if g.status == "source_changed":
+        raise HTTPException(409, "The application source changed. Find questions again before drafting answers.")
     r = await session.execute(select(Question).where(Question.grant_id == grant_id))
-    if not r.scalars().first():
+    question_rows = list(r.scalars().all())
+    if not question_rows:
         raise HTTPException(400, "No questions — run parse first")
+    if body.question_ids is not None:
+        if not body.question_ids:
+            raise HTTPException(422, "question_ids cannot be empty")
+        known = {q.question_id for q in question_rows}
+        unknown = [qid for qid in body.question_ids if qid not in known]
+        if unknown:
+            raise HTTPException(422, f"Unknown question_ids: {', '.join(unknown)}")
     job = Job(grant_id=grant_id, job_kind="generate", status="pending")
     session.add(job)
     await session.flush()
@@ -752,15 +947,18 @@ async def learn_org_from_grant(
     g = await session.get(Grant, grant_id)
     if not g:
         raise HTTPException(404, "Grant not found")
+    await _assert_no_active_job(session, grant_id)
+    if g.status == "source_changed":
+        raise HTTPException(409, "The application source changed. Find questions again before learning facts.")
     r = await session.execute(select(Question).where(Question.grant_id == grant_id))
     if not r.scalars().first():
         raise HTTPException(400, "No questions yet — find questions from a file or web page first.")
     ra = await session.execute(select(Answer).where(Answer.grant_id == grant_id))
     answers = list(ra.scalars().all())
-    if not has_any_nonempty_answer(answers):
+    if not has_any_reviewed_answer(answers):
         raise HTTPException(
             400,
-            "Fill in at least one answer first — then we can save reusable organization facts.",
+            "Review at least one completed answer first. Only reviewed answers can become reusable organization facts.",
         )
     job = Job(grant_id=grant_id, job_kind="learn_org", status="pending")
     session.add(job)
@@ -790,6 +988,9 @@ async def export_grant(
     g = await session.get(Grant, grant_id)
     if not g:
         raise HTTPException(404, "Grant not found")
+    await _assert_no_active_job(session, grant_id)
+    if g.status == "source_changed":
+        raise HTTPException(409, "The application source changed. Find questions again before exporting.")
     await session.refresh(g, ["questions", "answers"])
     qs = list(g.questions or [])
     ans = list(g.answers or [])
@@ -803,17 +1004,20 @@ async def export_grant(
     if body.format == "markdown":
         text = build_qa_markdown(g, qs, ans, xctx)
         key = StorageService.export_key(grant_id, "md")
+        storage.delete_exports(grant_id)
         storage.write_bytes(key, text.encode("utf-8"))
     elif body.format == "docx":
         docx_bytes = build_qa_docx(g, qs, ans, xctx)
         key = StorageService.export_key(grant_id, "docx")
+        storage.delete_exports(grant_id)
         storage.write_bytes(key, docx_bytes)
     else:
         pdf_bytes = build_qa_pdf(g, qs, ans, xctx)
         key = StorageService.export_key(grant_id, "pdf")
+        storage.delete_exports(grant_id)
         storage.write_bytes(key, pdf_bytes)
     g.export_file_key = key
-    g.updated_at = datetime.utcnow()
+    g.updated_at = _utcnow()
     await session.flush()
     download_name = build_export_download_filename(g.name, body.format)
     return {
@@ -833,6 +1037,7 @@ async def patch_answer(
     g = await session.get(Grant, grant_id)
     if not g:
         raise HTTPException(404, "Grant not found")
+    await _assert_no_active_job(session, grant_id)
     rq = await session.execute(
         select(Question).where(Question.grant_id == grant_id, Question.question_id == question_id)
     )
@@ -846,11 +1051,14 @@ async def patch_answer(
     if ans is None:
         ans = Answer(grant_id=grant_id, question_id=question_id)
         session.add(ans)
-    if body.answer_value is not None:
+    if "answer_value" in body.model_fields_set:
         try:
             ans.answer_value = coerce_answer_value(qrow, body.answer_value)
         except ValueError as e:
             raise HTTPException(422, str(e)) from e
+        ans.reviewed = False
+        ans.needs_manual_input = answer_value_is_effectively_empty(ans.answer_value, qrow.q_type)
+        ans.evidence_fact_ids = []
     if body.reviewed is not None:
         if body.reviewed:
             if answer_value_is_effectively_empty(ans.answer_value, qrow.q_type):
@@ -866,11 +1074,54 @@ async def patch_answer(
     return AnswerRead.from_model(ans)
 
 
+@app.patch("/api/v1/grants/{grant_id}/questions/{question_id}/definition", response_model=GrantRead)
+async def patch_question(
+    grant_id: str,
+    question_id: str,
+    body: QuestionPatch,
+    session: SessionDep,
+):
+    g = await session.get(Grant, grant_id)
+    if not g:
+        raise HTTPException(404, "Grant not found")
+    await _assert_no_active_job(session, grant_id)
+    result = await session.execute(
+        select(Question).where(Question.grant_id == grant_id, Question.question_id == question_id)
+    )
+    question = result.scalar_one_or_none()
+    if question is None:
+        raise HTTPException(404, "Question not found")
+    fields = body.model_fields_set
+    if "question_text" in fields and body.question_text is not None:
+        question.question_text = body.question_text.strip()
+    if "type" in fields and body.type is not None:
+        question.q_type = body.type
+    if "options" in fields and body.options is not None:
+        question.options = [str(option).strip() for option in body.options if str(option).strip()]
+    if "required" in fields and body.required is not None:
+        question.required = body.required
+    if "char_limit" in fields:
+        question.char_limit = body.char_limit
+    if question.q_type in ("single_choice", "multi_choice") and not question.options:
+        raise HTTPException(422, "Choice questions need at least one option")
+    answer_result = await session.execute(
+        select(Answer).where(Answer.grant_id == grant_id, Answer.question_id == question_id)
+    )
+    answer = answer_result.scalar_one_or_none()
+    if answer is not None:
+        answer.reviewed = False
+    g.updated_at = _utcnow()
+    await session.flush()
+    await session.refresh(g, ["questions", "answers"])
+    return _grant_read(g)
+
+
 @app.put("/api/v1/grants/{grant_id}/questions/reorder", response_model=GrantRead)
 async def reorder_questions(grant_id: str, body: QuestionReorderRequest, session: SessionDep):
     g = await session.get(Grant, grant_id)
     if not g:
         raise HTTPException(404, "Grant not found")
+    await _assert_no_active_job(session, grant_id)
     r = await session.execute(select(Question).where(Question.grant_id == grant_id))
     rows = list(r.scalars().all())
     if not rows:
@@ -887,7 +1138,7 @@ async def reorder_questions(grant_id: str, body: QuestionReorderRequest, session
     by_id = {q.question_id: q for q in rows}
     for i, qid in enumerate(got):
         by_id[qid].sort_order = i
-    g.updated_at = datetime.utcnow()
+    g.updated_at = _utcnow()
     await session.flush()
     await session.refresh(g, ["questions", "answers"])
     return _grant_read(g)
@@ -905,11 +1156,22 @@ async def get_job(job_id: str, session: SessionDep):
 async def get_file(
     file_path: str,
     storage: StorageDep,
+    session: SessionDep,
     filename: str | None = Query(
         None,
         description="Optional basename for Content-Disposition; ignored except under exports/.",
     ),
 ):
+    grant_ref = await session.execute(
+        select(Grant.id).where(
+            or_(Grant.source_file_key == file_path, Grant.export_file_key == file_path)
+        )
+    )
+    org_ref = await session.execute(
+        select(Organization.id).where(Organization.banner_file_key == file_path)
+    )
+    if grant_ref.scalar_one_or_none() is None and org_ref.scalar_one_or_none() is None:
+        raise HTTPException(404, "File not found")
     try:
         data = storage.read_bytes(file_path)
     except (ValueError, FileNotFoundError, OSError):
@@ -922,8 +1184,16 @@ async def get_file(
         ct = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     elif low.endswith(".md"):
         ct = "text/markdown; charset=utf-8"
+    elif low.endswith((".jpg", ".jpeg")):
+        ct = "image/jpeg"
+    elif low.endswith(".png"):
+        ct = "image/png"
+    elif low.endswith(".webp"):
+        ct = "image/webp"
+    elif low.endswith(".gif"):
+        ct = "image/gif"
 
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = {"X-Content-Type-Options": "nosniff"}
     if file_path.startswith("exports/"):
         if low.endswith(".pdf"):
             ext = ".pdf"

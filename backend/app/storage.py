@@ -51,6 +51,30 @@ class StorageService:
         except ValueError:
             pass
 
+    def delete_prefix(self, prefix: str) -> None:
+        """Delete files below a storage prefix without allowing traversal."""
+        try:
+            base = self._safe_key(prefix)
+        except ValueError:
+            return
+        if base.is_file():
+            base.unlink()
+            return
+        if not base.is_dir():
+            return
+        for path in sorted(base.rglob("*"), reverse=True):
+            if path.is_file():
+                path.unlink()
+            elif path.is_dir():
+                path.rmdir()
+        base.rmdir()
+
+    def delete_exports(self, grant_id: str) -> None:
+        safe_id = re.sub(r"[^a-zA-Z0-9._-]", "_", grant_id)[:128]
+        for path in self.root.glob(f"exports/{safe_id}.*"):
+            if path.is_file():
+                path.unlink()
+
     @staticmethod
     def grant_source_key(grant_id: str, filename: str) -> str:
         safe = re.sub(r"[^a-zA-Z0-9._-]", "_", Path(filename).name)[:200]

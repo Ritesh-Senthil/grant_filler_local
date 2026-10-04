@@ -5,9 +5,6 @@ from __future__ import annotations
 import math
 import re
 
-from app.models import Fact
-
-
 _WS = re.compile(r"\s+")
 
 

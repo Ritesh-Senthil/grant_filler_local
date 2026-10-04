@@ -42,30 +42,42 @@ class OllamaClient:
             f"Set OLLAMA_MODEL to an exact name from `ollama list` (e.g. qwen2.5:3b-instruct, not qwen2.5:3b unless you pulled that tag)."
         )
 
-    async def _chat_via_generate(self, client: httpx.AsyncClient, system: str, user: str) -> str:
+    async def _chat_via_generate(
+        self,
+        client: httpx.AsyncClient,
+        system: str,
+        user: str,
+        response_format: dict | str | None = None,
+    ) -> str:
         """Fallback for Ollama builds or proxies that do not expose POST /api/chat (404)."""
         prompt = f"### System instructions\n{system}\n\n### User message\n{user}"
-        r = await client.post(
-            f"{self.base}/api/generate",
-            json={
-                "model": self.model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.1},
-            },
-        )
+        body: dict = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0.1},
+        }
+        if response_format is not None:
+            body["format"] = response_format
+        r = await client.post(f"{self.base}/api/generate", json=body)
         err = _ollama_error_body(r)
         if _is_model_not_found(r.status_code, err):
             raise RuntimeError(self._model_not_found_message(err))
         try:
             r.raise_for_status()
         except httpx.HTTPStatusError as e:
-            raise RuntimeError(f"{e}{self._ollama_troubleshoot_hint()}") from e
+            detail = f": {err}" if err else ""
+            raise RuntimeError(f"{e}{detail}{self._ollama_troubleshoot_hint()}") from e
         data = r.json()
         return (data.get("response") or "").strip()
 
-    async def chat(self, system: str, user: str) -> str:
-        body = {
+    async def _chat(
+        self,
+        system: str,
+        user: str,
+        response_format: dict | str | None = None,
+    ) -> str:
+        body: dict = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system},
@@ -74,23 +86,34 @@ class OllamaClient:
             "stream": False,
             "options": {"temperature": 0.1},
         }
+        if response_format is not None:
+            body["format"] = response_format
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             r = await client.post(f"{self.base}/api/chat", json=body)
             err = _ollama_error_body(r)
             if r.status_code == 404:
                 if _is_model_not_found(404, err):
                     raise RuntimeError(self._model_not_found_message(err))
-                return await self._chat_via_generate(client, system, user)
+                return await self._chat_via_generate(client, system, user, response_format)
             try:
                 r.raise_for_status()
             except httpx.HTTPStatusError as e:
-                raise RuntimeError(f"{e}{self._ollama_troubleshoot_hint()}") from e
+                detail = f": {err}" if err else ""
+                raise RuntimeError(f"{e}{detail}{self._ollama_troubleshoot_hint()}") from e
             data = r.json()
             msg = data.get("message") or {}
             return msg.get("content") or ""
 
+    async def chat(self, system: str, user: str) -> str:
+        return await self._chat(system, user)
+
     async def chat_json(self, system: str, user: str, response_model: type[BaseModel]) -> BaseModel:
-        return await chat_json_with_repair(self.chat, system, user, response_model)
+        schema = response_model.model_json_schema()
+
+        async def structured_chat(s: str, u: str) -> str:
+            return await self._chat(s, u, schema)
+
+        return await chat_json_with_repair(structured_chat, system, user, response_model)
 
     async def embed_text(self, text: str) -> list[float]:
         """Single text embedding via Ollama /api/embeddings (tries `input` then `prompt`)."""

@@ -5,7 +5,7 @@ import re
 import pytest
 
 from app.models import Fact
-from app.services.retrieve import retrieve_evidence
+from app.services.retrieve import build_evidence_index, retrieve_evidence
 
 
 def _bow_vec(text: str, dim: int = 128) -> list[float]:
@@ -63,3 +63,38 @@ async def test_retrieve_returns_fact_rows(fake_embedder: FakeEmbedder):
     )
     texts = " ".join(e.text for e in ev)
     assert "Acme" in texts or "teach" in texts
+
+
+async def test_retrieve_reuses_corpus_embeddings():
+    class CountingEmbedder(FakeEmbedder):
+        batches = 0
+
+        async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+            self.batches += 1
+            return await super().embed_texts(texts)
+
+    embedder = CountingEmbedder()
+    chunks = ["Mission information", "Budget information"]
+    index = await build_evidence_index(embedder, [], grant_chunks=chunks)
+    await retrieve_evidence(embedder, "mission", [], index=index)
+    await retrieve_evidence(embedder, "budget", [], index=index)
+    assert embedder.batches == 1
+
+
+async def test_retrieve_falls_back_when_embeddings_are_unavailable():
+    class BrokenEmbedder:
+        async def embed_text(self, _text: str) -> list[float]:
+            raise RuntimeError("missing model")
+
+        async def embed_texts(self, _texts: list[str]) -> list[list[float]]:
+            raise RuntimeError("missing model")
+
+    evidence = await retrieve_evidence(
+        BrokenEmbedder(),
+        "annual budget",
+        [],
+        grant_chunks=["Describe the annual budget.", "Parking information."],
+        top_k=1,
+    )
+    assert len(evidence) == 1
+    assert "budget" in evidence[0].text.lower()

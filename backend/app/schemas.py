@@ -30,7 +30,7 @@ class DeveloperCreditsRead(BaseModel):
 
 
 class UserPreferencesRead(BaseModel):
-    """Stub locale until Settings date formats wire through (roadmap E)."""
+    """Preferences currently applied to exported documents."""
     locale: str = "iso"
 
 
@@ -72,14 +72,26 @@ class GrantCreate(BaseModel):
     name: str
     grant_url: str | None = None
     portal_url: str | None = None
-    source_type: str = "pdf"
+    source_type: Literal["pdf", "docx", "web"] = "pdf"
 
 
 class GrantUpdate(BaseModel):
     name: str | None = None
     grant_url: str | None = None
     portal_url: str | None = None
-    status: str | None = None
+    status: Literal["draft", "ready", "source_changed"] | None = None
+
+
+class WorkspaceAnswerUpdate(BaseModel):
+    question_id: str
+    answer_value: Any = None
+
+
+class GrantWorkspaceUpdate(BaseModel):
+    name: str | None = None
+    grant_url: str | None = None
+    portal_url: str | None = None
+    answers: list[WorkspaceAnswerUpdate] = Field(default_factory=list)
 
 
 class QuestionRead(BaseModel):
@@ -193,11 +205,22 @@ class QuestionReorderRequest(BaseModel):
     question_ids: list[str] = Field(min_length=1)
 
 
+class QuestionPatch(BaseModel):
+    question_text: str | None = Field(default=None, min_length=1)
+    type: Literal["text", "textarea", "single_choice", "multi_choice", "yes_no", "number", "date", "other"] | None = None
+    options: list[str] | None = None
+    required: bool | None = None
+    char_limit: int | None = Field(default=None, ge=1)
+
+
 class ConfigRead(BaseModel):
     llm_provider: str = "ollama"
+    local_only: bool = False
     """Whether the active provider comes from env or from a saved choice in DATA_DIR/app_preferences.json."""
     llm_provider_source: Literal["env", "user"] = "env"
     llm_configured: bool = False
+    embedding_configured: bool = False
+    missing_models: list[str] = Field(default_factory=list)
     chat_model: str = ""
     embed_model: str = ""
     data_dir: str = ""
@@ -207,4 +230,3 @@ class LlmPreferenceUpdate(BaseModel):
     """Persist active provider under DATA_DIR/app_preferences.json (overrides LLM_PROVIDER from .env)."""
 
     llm_provider: Literal["ollama", "gemini"]
-

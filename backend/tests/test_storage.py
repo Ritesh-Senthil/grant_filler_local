@@ -44,3 +44,14 @@ def test_read_missing_raises(tmp_path):
     s = StorageService(Settings(data_dir=tmp_path))
     with pytest.raises(FileNotFoundError):
         s.read_bytes("grants/x/missing.pdf")
+
+
+def test_delete_prefix_removes_only_selected_grant(tmp_path):
+    storage = StorageService(Settings(data_dir=tmp_path))
+    storage.write_bytes("grants/g1/a.pdf", b"a")
+    storage.write_bytes("grants/g1/b.docx", b"b")
+    storage.write_bytes("grants/g2/keep.pdf", b"c")
+    storage.delete_prefix("grants/g1")
+    assert not storage.exists("grants/g1/a.pdf")
+    assert not storage.exists("grants/g1/b.docx")
+    assert storage.exists("grants/g2/keep.pdf")

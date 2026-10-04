@@ -96,6 +96,24 @@ export function OrgPage() {
     load();
   }
 
+  async function editFact(fact: Fact) {
+    const key = window.prompt("Fact label:", fact.key);
+    if (key === null) return;
+    const value = window.prompt("Fact value:", fact.value);
+    if (value === null) return;
+    if (!key.trim() && !value.trim()) {
+      setError("A fact needs a label or value.");
+      return;
+    }
+    setError(null);
+    try {
+      await api.updateFact(fact.id, { key: key.trim(), value: value.trim() });
+      await load();
+    } catch (error) {
+      setError((error as Error).message);
+    }
+  }
+
   return (
     <div className="space-y-8 max-w-3xl">
       <div>
@@ -157,13 +175,22 @@ export function OrgPage() {
                 <div className="text-sm text-slate-600 dark:text-slate-400 whitespace-pre-wrap">{f.value}</div>
                 <FactProvenance f={f} />
               </div>
-              <button
-                type="button"
-                onClick={() => removeFact(f.id)}
-                className="text-sm text-red-600 dark:text-red-400 shrink-0"
-              >
-                Delete
-              </button>
+              <div className="flex flex-col gap-2 shrink-0 items-end">
+                <button
+                  type="button"
+                  onClick={() => void editFact(f)}
+                  className="text-sm text-blue-600 dark:text-blue-400"
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  onClick={() => removeFact(f.id)}
+                  className="text-sm text-red-600 dark:text-red-400"
+                >
+                  Delete
+                </button>
+              </div>
             </li>
           ))}
         </ul>

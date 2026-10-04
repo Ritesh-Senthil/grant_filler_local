@@ -116,6 +116,37 @@ async def test_fetch_web_segments_mocked_httpx(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_download_revalidates_redirect_destination(monkeypatch):
+    import httpx
+
+    from app.services import web_fetch as wf
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, follow_redirects=False):
+            request = httpx.Request("GET", url)
+            return httpx.Response(
+                302,
+                headers={"location": "https://127.0.0.1/private"},
+                request=request,
+            )
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(wf.socket, "getaddrinfo", lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 0))])
+    with pytest.raises(WebFetchError) as exc:
+        await wf._download_bytes(Settings(), "https://example.org/start", {"User-Agent": "test"})
+    assert exc.value.code in ("HOST_BLOCKED", "NON_PUBLIC_IP")
+
+
+@pytest.mark.asyncio
 async def test_fetch_web_segments_playwright_fallback(monkeypatch):
     """Thin static HTML triggers Playwright path; mocked (no real browser)."""
     from urllib.parse import urlparse

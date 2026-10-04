@@ -54,6 +54,10 @@ def has_any_nonempty_answer(answers: list[Answer]) -> bool:
     return any(answer_value_text(a) for a in answers)
 
 
+def has_any_reviewed_answer(answers: list[Answer]) -> bool:
+    return any(a.reviewed and answer_value_text(a) for a in answers)
+
+
 def build_learn_org_user_prompt(
     existing: list[tuple[str, str]],
     pairs: list[tuple[Question, Answer]],

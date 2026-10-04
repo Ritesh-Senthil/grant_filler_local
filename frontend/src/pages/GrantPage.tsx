@@ -24,6 +24,7 @@ import { QuestionAnswerField } from "../components/QuestionAnswerField";
 import { grantStatusLabel, questionTypeLabel } from "../copy";
 import { humanizeApiError } from "../errors";
 import { api, type Answer, type GrantDetail, type Question } from "../api";
+import { clearActiveJob, readActiveJob, saveActiveJob } from "../utils/activeJob";
 import { answerSufficientForReview } from "../utils/answerReview";
 import {
   answerValuesEqual,
@@ -103,12 +104,13 @@ export function GrantPage() {
     blockerHandling.current = false;
   }, [blocker]);
 
-  const load = useCallback(() => {
+  const load = useCallback(async () => {
     if (!id) return;
-    api
-      .getGrant(id)
-      .then(setGrant)
-      .catch((e: Error) => setError(humanizeApiError(e)));
+    try {
+      setGrant(await api.getGrant(id));
+    } catch (e) {
+      setError(humanizeApiError(e));
+    }
   }, [id]);
 
   useEffect(() => {
@@ -173,13 +175,14 @@ export function GrantPage() {
     [grant]
   );
 
-  async function pollJob(jobId: string, label: string) {
+  const pollJob = useCallback(async (jobId: string, label: string) => {
     let consecutiveErrors = 0;
     for (let i = 0; i < 600; i++) {
       try {
         const j = await api.getJob(jobId);
         consecutiveErrors = 0;
         if (j.status === "completed") {
+          if (id) clearActiveJob(id, jobId);
           if (j.job_kind === "parse" || j.job_kind === "generate") {
             setDraftAnswerValues({});
           }
@@ -188,16 +191,21 @@ export function GrantPage() {
               facts_added?: number;
               facts_updated?: number;
               facts_skipped_similar?: number;
+              facts_skipped_conflicts?: number;
             };
             const a = r.facts_added ?? 0;
-            const u = r.facts_updated ?? 0;
             const sk = r.facts_skipped_similar ?? 0;
+            const conflicts = r.facts_skipped_conflicts ?? 0;
             const skipPart =
               sk > 0
                 ? ` ${sk} near-duplicate${sk === 1 ? "" : "s"} skipped (already covered in your profile).`
                 : "";
             setJobMsg(
-              `Organization profile updated: ${a} new fact${a === 1 ? "" : "s"}, ${u} updated.${skipPart} View them under Your organization.`
+              `Organization profile updated: ${a} new fact${a === 1 ? "" : "s"}.${skipPart}${
+                conflicts > 0
+                  ? ` ${conflicts} possible conflict${conflicts === 1 ? " was" : "s were"} left unchanged for safety.`
+                  : ""
+              } View them under Your organization.`
             );
             window.setTimeout(() => setJobMsg(null), 10000);
           } else {
@@ -207,6 +215,7 @@ export function GrantPage() {
           return;
         }
         if (j.status === "failed") {
+          if (id) clearActiveJob(id, jobId);
           setJobMsg(null);
           setError(humanizeApiError(j.error || "Something went wrong."));
           return;
@@ -218,6 +227,7 @@ export function GrantPage() {
         consecutiveErrors += 1;
         setJobMsg(`${label} — connection issue, retrying…`);
         if (consecutiveErrors >= 8) {
+          if (id) clearActiveJob(id, jobId);
           setJobMsg(null);
           setError(humanizeApiError(e));
           return;
@@ -228,6 +238,19 @@ export function GrantPage() {
     setJobMsg(
       "This is taking longer than expected. Check that the AI assistant is running on this computer, then try again."
     );
+  }, [id, load]);
+
+  useEffect(() => {
+    if (!id) return;
+    const activeJob = readActiveJob(id);
+    if (!activeJob) return;
+    setError(null);
+    void pollJob(activeJob.jobId, activeJob.label);
+  }, [id, pollJob]);
+
+  async function trackAndPollJob(jobId: string, label: string) {
+    if (id) saveActiveJob(id, { jobId, label });
+    await pollJob(jobId, label);
   }
 
   async function saveWorkspace() {
@@ -242,7 +265,12 @@ export function GrantPage() {
     setSaving(true);
     setError(null);
     try {
-      const body: Partial<{ name: string; grant_url: string | null; portal_url: string | null }> = {};
+      const body: {
+        name?: string;
+        grant_url?: string | null;
+        portal_url?: string | null;
+        answers: Array<{ question_id: string; answer_value: unknown }>;
+      } = { answers: [] };
       if (trimmedName !== grant.name.trim()) body.name = trimmedName;
       const urlTrim = urlDraft.trim();
       const serverUrl = urlFromGrant(grant).trim();
@@ -251,20 +279,13 @@ export function GrantPage() {
         body.portal_url = null;
       }
 
-      let meta = grant;
-      if (Object.keys(body).length > 0) {
-        meta = await api.putGrant(id, body);
-        setGrant(meta);
-      }
-
-      for (const q of meta.questions) {
+      for (const q of grant.questions) {
         const draft = draftAnswerValues[q.question_id];
         if (draft === undefined) continue;
-        if (answerValuesEqual(q.type, draft, serverAnswerValue(meta, q.question_id))) continue;
-        await api.patchAnswer(id, q.question_id, { answer_value: draft });
+        if (answerValuesEqual(q.type, draft, serverAnswerValue(grant, q.question_id))) continue;
+        body.answers.push({ question_id: q.question_id, answer_value: draft });
       }
-
-      const loaded = await api.getGrant(id);
+      const loaded = await api.saveWorkspace(id, body);
       setGrant(loaded);
       setNameDraft(loaded.name);
       setUrlDraft(urlFromGrant(loaded));
@@ -318,7 +339,7 @@ export function GrantPage() {
     setJobMsg("Finding questions in your file…");
     try {
       const { job_id } = await api.parse(id, {});
-      await pollJob(job_id, "Finding questions");
+      await trackAndPollJob(job_id, "Finding questions");
     } catch (e) {
       setJobMsg(null);
       setError(humanizeApiError(e));
@@ -356,7 +377,7 @@ export function GrantPage() {
     setJobMsg("Finding questions on the web page…");
     try {
       const { job_id } = await api.parse(id, { use_url: true, url: u });
-      await pollJob(job_id, "Finding questions");
+      await trackAndPollJob(job_id, "Finding questions");
     } catch (e) {
       setJobMsg(null);
       setError(humanizeApiError(e));
@@ -403,7 +424,7 @@ export function GrantPage() {
     setJobMsg("Updating organization facts from answers…");
     try {
       const { job_id } = await api.learnOrgFromGrant(id);
-      await pollJob(job_id, "Updating organization facts");
+      await trackAndPollJob(job_id, "Updating organization facts");
     } catch (e) {
       setJobMsg(null);
       setError(humanizeApiError(e));
@@ -420,7 +441,7 @@ export function GrantPage() {
     setJobMsg("Writing draft answers…");
     try {
       const { job_id } = await api.generate(id);
-      await pollJob(job_id, "Writing drafts");
+      await trackAndPollJob(job_id, "Writing drafts");
     } catch (e) {
       setJobMsg(null);
       setError(humanizeApiError(e));
@@ -447,8 +468,34 @@ export function GrantPage() {
     if (!id) return;
     setError(null);
     try {
-      await api.patchAnswer(id, q.question_id, { reviewed });
+      const draft = draftAnswerValues[q.question_id];
+      const body: { reviewed: boolean; answer_value?: unknown } = { reviewed };
+      if (draft !== undefined) body.answer_value = draft;
+      await api.patchAnswer(id, q.question_id, body);
+      setDraftAnswerValues((previous) => {
+        const next = { ...previous };
+        delete next[q.question_id];
+        return next;
+      });
       await load();
+    } catch (e) {
+      setError(humanizeApiError(e));
+    }
+  }
+
+  async function editQuestion(q: Question) {
+    if (!id) return;
+    const text = window.prompt("Correct the question text:", q.question_text);
+    if (text === null) return;
+    const trimmed = text.trim();
+    if (!trimmed) {
+      setError("Question text cannot be empty.");
+      return;
+    }
+    setError(null);
+    try {
+      const updated = await api.patchQuestion(id, q.question_id, { question_text: trimmed });
+      setGrant(updated);
     } catch (e) {
       setError(humanizeApiError(e));
     }
@@ -564,8 +611,8 @@ export function GrantPage() {
   const jobPct = jobMsg?.match(/(\d+)%/)?.[1];
   const jobPctNum = jobPct != null ? Math.min(100, Math.max(0, parseInt(jobPct, 10))) : null;
 
-  const webPreviewDisabled = previewLoading || !urlDraft.trim() || urlOutOfSync;
-  const webParseDisabled = !urlDraft.trim() || urlOutOfSync;
+  const webPreviewDisabled = previewLoading || !urlDraft.trim() || urlOutOfSync || jobMsg !== null;
+  const webParseDisabled = !urlDraft.trim() || urlOutOfSync || jobMsg !== null;
 
   const actionPanel = (
     <div className="rounded-2xl border border-slate-200/90 bg-white shadow-sm dark:border-slate-700/80 dark:bg-slate-900/80 dark:shadow-none overflow-hidden">
@@ -602,7 +649,7 @@ export function GrantPage() {
           <button
             type="button"
             onClick={() => void generate()}
-            disabled={nQuestions === 0}
+            disabled={nQuestions === 0 || grant.status === "source_changed" || jobMsg !== null}
             className="w-full rounded-xl bg-blue-600 hover:bg-blue-700 text-white px-4 py-3.5 text-[15px] font-semibold shadow-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none"
           >
             Write draft answers with AI
@@ -625,7 +672,7 @@ export function GrantPage() {
             <button
               type="button"
               onClick={() => void exportGrantFormat("qa_pdf")}
-              disabled={nQuestions === 0}
+              disabled={nQuestions === 0 || grant.status === "source_changed" || jobMsg !== null}
               className="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 py-2.5 text-xs font-medium text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700/80 disabled:opacity-40"
             >
               PDF
@@ -633,7 +680,7 @@ export function GrantPage() {
             <button
               type="button"
               onClick={() => void exportGrantFormat("markdown")}
-              disabled={nQuestions === 0}
+              disabled={nQuestions === 0 || grant.status === "source_changed" || jobMsg !== null}
               className="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 py-2.5 text-xs font-medium text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700/80 disabled:opacity-40"
             >
               Markdown
@@ -641,7 +688,7 @@ export function GrantPage() {
             <button
               type="button"
               onClick={() => void exportGrantFormat("docx")}
-              disabled={nQuestions === 0}
+              disabled={nQuestions === 0 || grant.status === "source_changed" || jobMsg !== null}
               className="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 py-2.5 text-xs font-medium text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700/80 disabled:opacity-40"
             >
               Word
@@ -660,7 +707,8 @@ export function GrantPage() {
             <button
               type="button"
               onClick={() => void learnFromAnswers()}
-              className="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-transparent py-2.5 text-sm font-medium text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/80"
+              disabled={grant.status === "source_changed" || jobMsg !== null}
+              className="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-transparent py-2.5 text-sm font-medium text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/80 disabled:opacity-40"
             >
               Learn from these answers
             </button>
@@ -765,14 +813,14 @@ export function GrantPage() {
                 <input
                   type="file"
                   accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                  disabled={uploading}
+                  disabled={uploading || jobMsg !== null}
                   onChange={(e) => onUpload(e.target.files?.[0] ?? null)}
                   className="text-sm w-full file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-sm dark:file:bg-slate-700"
                 />
                 <button
                   type="button"
                   onClick={() => void parseFromFile()}
-                  disabled={!grant.source_file_key}
+                  disabled={!grant.source_file_key || jobMsg !== null}
                   className="w-full rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 py-2.5 text-sm font-medium disabled:opacity-40"
                 >
                   Find questions in file
@@ -874,6 +922,7 @@ export function GrantPage() {
                         a={merged}
                         onValueChange={(v) => updateAnswerDraft(q, v)}
                         onReview={(r) => void toggleReviewed(q, r)}
+                        onEditQuestion={() => void editQuestion(q)}
                         onMarkReviewBlocked={() => setError("Add an answer before marking as reviewed.")}
                         reorderDisabled={reorderBusy || nQuestions < 2}
                       />
@@ -896,6 +945,7 @@ export function GrantPage() {
                               displayLabel={displayLabel}
                               onValueChange={() => {}}
                               onReview={() => {}}
+                              onEditQuestion={() => {}}
                               onMarkReviewBlocked={() => {}}
                               reorderDisabled
                               dragHandle={null}
@@ -923,6 +973,7 @@ function QuestionCardInner({
   displayLabel,
   onValueChange,
   onReview,
+  onEditQuestion,
   onMarkReviewBlocked,
   reorderDisabled,
   dragHandle,
@@ -933,6 +984,7 @@ function QuestionCardInner({
   displayLabel: string;
   onValueChange: (v: unknown) => void;
   onReview: (r: boolean) => void | Promise<void>;
+  onEditQuestion: () => void;
   onMarkReviewBlocked: () => void;
   reorderDisabled: boolean;
   dragHandle: SortableDragHandle | null;
@@ -981,7 +1033,18 @@ function QuestionCardInner({
               ) : null}
             </div>
           </div>
-          <div className="font-medium text-slate-900 dark:text-white leading-snug text-[15px]">{q.question_text}</div>
+          <div className="flex items-start gap-3">
+            <div className="font-medium text-slate-900 dark:text-white leading-snug text-[15px] flex-1">{q.question_text}</div>
+            {!blockInteraction ? (
+              <button
+                type="button"
+                onClick={onEditQuestion}
+                className="text-xs text-blue-600 dark:text-blue-400 underline underline-offset-2 shrink-0"
+              >
+                Edit question
+              </button>
+            ) : null}
+          </div>
           <QuestionAnswerField q={q} a={a} onValueChange={onValueChange} />
           <label
             className={`flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300 pt-1 ${
@@ -1017,6 +1080,7 @@ function SortableQuestionCard({
   displayLabel,
   onValueChange,
   onReview,
+  onEditQuestion,
   onMarkReviewBlocked,
   reorderDisabled,
 }: {
@@ -1025,6 +1089,7 @@ function SortableQuestionCard({
   displayLabel: string;
   onValueChange: (v: unknown) => void;
   onReview: (r: boolean) => void | Promise<void>;
+  onEditQuestion: () => void;
   onMarkReviewBlocked: () => void;
   reorderDisabled: boolean;
 }) {
@@ -1052,6 +1117,7 @@ function SortableQuestionCard({
         displayLabel={displayLabel}
         onValueChange={onValueChange}
         onReview={onReview}
+        onEditQuestion={onEditQuestion}
         onMarkReviewBlocked={onMarkReviewBlocked}
         reorderDisabled={reorderDisabled}
         dragHandle={{ attributes, listeners }}

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import BytesIO
+import unicodedata
 
 from docx import Document
 from docx.enum.text import WD_LINE_SPACING
@@ -31,10 +32,27 @@ def _default_context() -> ExportContext:
 
 
 def _txt(s: str) -> str:
-    """fpdf2 core fonts are latin-1; normalize for safety."""
+    """Convert text safely for fpdf2's built-in latin-1 fonts.
+
+    Preserve the meaning of common smart punctuation instead of rendering it as
+    a question mark in the exported PDF.
+    """
     if not s:
         return ""
-    return s.encode("latin-1", errors="replace").decode("latin-1")
+    punctuation = str.maketrans(
+        {
+            "’": "'",
+            "‘": "'",
+            "“": '"',
+            "”": '"',
+            "–": "-",
+            "—": "-",
+            "…": "...",
+            " ": " ",
+        }
+    )
+    normalized = unicodedata.normalize("NFKD", s.translate(punctuation))
+    return normalized.encode("latin-1", errors="replace").decode("latin-1")
 
 
 def _format_answer_value(a: Answer | None) -> str:

@@ -113,7 +113,10 @@ export const api = {
     json<{
       llm_provider: string;
       llm_provider_source: "env" | "user";
+      local_only: boolean;
       llm_configured: boolean;
+      embedding_configured: boolean;
+      missing_models: string[];
       chat_model: string;
       embed_model: string;
       data_dir: string;
@@ -123,6 +126,8 @@ export const api = {
       llm_provider: string;
       llm_provider_source: "env" | "user";
       llm_configured: boolean;
+      embedding_configured: boolean;
+      missing_models: string[];
       chat_model: string;
       embed_model: string;
       data_dir: string;
@@ -132,6 +137,8 @@ export const api = {
       llm_provider: string;
       llm_provider_source: "env" | "user";
       llm_configured: boolean;
+      embedding_configured: boolean;
+      missing_models: string[];
       chat_model: string;
       embed_model: string;
       data_dir: string;
@@ -168,6 +175,15 @@ export const api = {
     id: string,
     body: Partial<{ name: string; grant_url: string | null; portal_url: string | null; status: string }>
   ) => json<GrantDetail>(`/api/v1/grants/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  saveWorkspace: (
+    id: string,
+    body: {
+      name?: string;
+      grant_url?: string | null;
+      portal_url?: string | null;
+      answers?: Array<{ question_id: string; answer_value: unknown }>;
+    }
+  ) => json<GrantDetail>(`/api/v1/grants/${id}/workspace`, { method: "PUT", body: JSON.stringify(body) }),
   deleteGrant: (id: string) => json<{ ok: boolean }>(`/api/v1/grants/${id}`, { method: "DELETE" }),
   duplicateGrant: (id: string, body?: { name?: string; include_qa?: boolean }) =>
     json<GrantDetail>(`/api/v1/grants/${id}/duplicate`, {
@@ -224,6 +240,21 @@ export const api = {
     body: { answer_value?: unknown; reviewed?: boolean }
   ) =>
     json<Answer>(`/api/v1/grants/${grantId}/questions/${questionId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  patchQuestion: (
+    grantId: string,
+    questionId: string,
+    body: Partial<{
+      question_text: string;
+      type: string;
+      options: string[];
+      required: boolean;
+      char_limit: number | null;
+    }>
+  ) =>
+    json<GrantDetail>(`/api/v1/grants/${grantId}/questions/${questionId}/definition`, {
       method: "PATCH",
       body: JSON.stringify(body),
     }),

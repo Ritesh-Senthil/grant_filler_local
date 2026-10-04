@@ -112,3 +112,15 @@ def test_export_context_appears_in_outputs():
         body = zf.read("word/document.xml").decode("utf-8", errors="replace")
     assert "Acme" in body
     assert "2019" in body
+
+
+def test_pdf_preserves_smart_punctuation_as_readable_ascii():
+    """Core PDF fonts cannot render curly punctuation, so export a readable fallback."""
+    g = _grant()
+    q = _q(question_text="How does the organization support families?")
+    ans = [_answer(answer_value="Layers of Dignity’s work is people-first — always.")]
+    pdf = build_qa_pdf(g, [q], ans)
+    doc = fitz.open(stream=pdf, filetype="pdf")
+    text = "".join(p.get_text() for p in doc)
+    assert "Layers of Dignity's work is people-first - always." in text
+    assert "Dignity?s" not in text
