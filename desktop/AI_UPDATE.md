@@ -19,6 +19,16 @@ Open **GrantFiller AI Options** on the desktop:
 
 Let any grant job finish before switching. Both choices run locally; the regular GrantFiller icon works as before. After the update, reopen or refresh an already-open GrantFiller browser tab. Once updated, this download folder can be moved or deleted; the installed selector remains available.
 
+## Compare 3B and 7B with the same test PDF
+
+The repository already includes [a clean, one-page, 10-question sample grant](https://raw.githubusercontent.com/Ritesh-Senthil/grant_filler_local/main/testdata/grant_pdfs/01_test_grant_clean_linear.pdf). Download it; no real applicant data is included in the PDF.
+
+1. Keep the same organization facts throughout both runs.
+2. Choose 3B in GrantFiller AI Options. Create a grant named `Test - 3B`, upload the sample, find questions, and draft answers. Note extraction and drafting time separately, then export the result.
+3. Choose 7B. Create `Test - 7B`, upload the same PDF, and repeat.
+4. Compare whether all 10 questions were found, answers use your saved facts, constraints are followed, and missing dates or budget amounts are flagged for manual input rather than invented. Certification still needs a person's review.
+5. Prefer the model that produces useful drafts at an acceptable wait time on this laptop. The short installation AI test does not measure a whole grant's performance.
+
 ## If the update fails
 
 Read the error in the window. A failed model download or AI test leaves the current model selected. If activation fails, the updater restores the previous model setting. Saved data remains in `%LOCALAPPDATA%\GrantFiller\data`. Use the existing Repair GrantFiller shortcut if the app will not start. If it still fails, share `%LOCALAPPDATA%\GrantFiller\logs` with Ritesh.
