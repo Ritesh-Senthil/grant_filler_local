@@ -12,6 +12,8 @@ from app.main import app
 
 class SPAStaticFiles(StaticFiles):
     async def get_response(self, path, scope):
+        # Starlette normalizes paths with OS separators on Windows.
+        path = path.replace("\\", "/")
         # Unknown API requests and missing assets must remain real 404s.
         if path == "api" or path.startswith("api/"):
             raise HTTPException(404, "Not found")
